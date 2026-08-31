@@ -1,0 +1,109 @@
+export LANG="en_US.UTF-8"
+
+# Keep PATH and FPATH entries unique (no duplicates)
+typeset -U path PATH fpath FPATH
+# Tool Flags & Compilers
+
+### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
+# ==============================================================================
+# PROMPT & COMPLETIONS
+# ==============================================================================
+export PROMPT='%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
+
+# ==============================================================================
+# SOURCE DOTFILES & MODULES
+# ==============================================================================
+# Load general personal zsh files
+for file in "$HOME/.dotfiles/zsh"/*.zsh; do
+  [[ -r "$file" ]] && source "$file"
+done
+
+# Load Nutanix local overrides (*ntnx*.zsh)
+if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
+  for file in "$HOME/.dotfiles/zsh/local"/*ntnx*.zsh; do
+    [[ -r "$file" ]] && source "$file"
+  done
+fi
+
+
+# Completion Styles
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' # Case-insensitive
+zstyle ':completion:*' menu select                      # Interactive menu
+
+# Directory Colors
+if [[ -f "$HOME/.dircolors" ]]; then
+  eval "$(gdircolors -b "$HOME/.dircolors")"
+fi
+
+
+# ==============================================================================
+# ZSH PLUGINS & COMPLETIONS (OS-Agnostic: macOS, Rocky Linux, Ubuntu)
+# ==============================================================================
+
+# 1. Fast, Subshell-Free Homebrew Initialization
+if [[ -d "/opt/homebrew" ]]; then
+  HOMEBREW_PREFIX="/opt/homebrew"
+elif [[ -d "/usr/local/Homebrew" || -d "/usr/local/Cellar" ]]; then
+  HOMEBREW_PREFIX="/usr/local"
+elif [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
+  HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew"
+fi
+
+if [[ -n "$HOMEBREW_PREFIX" ]]; then
+  export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+  export MANPATH="$HOMEBREW_PREFIX/share/man:${MANPATH:-}"
+  export INFOPATH="$HOMEBREW_PREFIX/share/info:${INFOPATH:-}"
+fi
+
+# 2. Populate FPATH for Completions
+for dir in \
+  "$HOME/.zsh/plugins/zsh-completions/src" \
+  ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-completions"} \
+  "/usr/share/zsh/site-functions" \
+  "/usr/share/zsh/vendor-completions"; do
+  [[ -d "$dir" ]] && FPATH="$dir:$FPATH"
+done
+
+# Run compinit once; skip on reload to avoid ~35s compdump penalty per call
+if [[ -z "$_ZSHRC_COMPINIT_DONE" ]]; then
+  autoload -Uz compinit
+  if [[ -n ~/.zcompdump(#qN.mh+24) ]]; then
+    compinit
+  else
+    compinit -C
+  fi
+  _ZSHRC_COMPINIT_DONE=1
+fi
+
+# 3. FZF Integration (AFTER compinit)
+if command -v fzf &>/dev/null; then
+  source <(fzf --zsh)
+fi
+
+# Plugins: load once only — re-sourcing stacks widget wrappers (O(n²) slowdown)
+if [[ -z "$_ZSH_PLUGINS_LOADED" ]]; then
+  _load_plugin() {
+    for file in "$@"; do
+      if [[ -f "$file" ]]; then
+        source "$file"; return 0
+      fi
+    done
+  }
+
+  # Autosuggestions
+  _load_plugin \
+    "$HOME/.zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+    "/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+    "/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+    ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"}
+
+  # Syntax Highlighting (must load LAST)
+  _load_plugin \
+    "/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+    "$HOME/.zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+    "/usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+    ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"}
+
+  unfunction _load_plugin
+  _ZSH_PLUGINS_LOADED=1
+fi
