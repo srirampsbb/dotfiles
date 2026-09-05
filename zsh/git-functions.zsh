@@ -113,51 +113,35 @@ gwa() {
 
   local selected_remote="${selected_remote_branch%%/*}"
   local selected_branch="${selected_remote_branch#*/}"
-  local fetch_branch_log
-  fetch_branch_log="$(mktemp)"
-
-  echo "🔄 Fetching latest for '$selected_remote_branch' in background..."
-  git fetch "$selected_remote" "$selected_branch" >"$fetch_branch_log" 2>&1 &
-  local fetch_pid=$!
 
   local worktree_name
   read "worktree_name?Worktree name (relative to $worktrees_root): "
   if [[ -z "$worktree_name" ]]; then
-    wait "$fetch_pid" >/dev/null 2>&1
-    rm -f "$fetch_branch_log"
     echo "❌ Error: Worktree name is required."
     return 1
   fi
 
   if [[ "$worktree_name" == */* ]]; then
-    wait "$fetch_pid" >/dev/null 2>&1
-    rm -f "$fetch_branch_log"
     echo "❌ Error: Worktree name must be a single directory name (no '/')."
     return 1
   fi
 
   if ! mkdir -p "$worktrees_root" 2>/dev/null; then
-    wait "$fetch_pid" >/dev/null 2>&1
-    rm -f "$fetch_branch_log"
     echo "❌ Error: Failed to ensure worktrees directory '$worktrees_root'."
     return 1
   fi
 
   local target_path="$worktrees_root/$worktree_name"
   if [[ -e "$target_path" ]]; then
-    wait "$fetch_pid" >/dev/null 2>&1
-    rm -f "$fetch_branch_log"
     echo "❌ Error: Path '$target_path' already exists."
     return 1
   fi
 
-  if ! wait "$fetch_pid"; then
+  echo "🔄 Fetching latest for '$selected_remote_branch'..."
+  if ! git fetch "$selected_remote" "$selected_branch" 2>&1; then
     echo "❌ Error: Failed to fetch '$selected_remote_branch'."
-    cat "$fetch_branch_log"
-    rm -f "$fetch_branch_log"
     return 1
   fi
-  rm -f "$fetch_branch_log"
 
   if ! git show-ref --verify --quiet "refs/remotes/$selected_remote_branch"; then
     echo "❌ Error: Remote branch ref 'refs/remotes/$selected_remote_branch' does not exist after fetch."
@@ -177,10 +161,37 @@ gwa() {
     return 1
   fi
 
+  local local_branch_name
+  while true; do
+    read "local_branch_name?Local branch name: "
+    if [[ -z "$local_branch_name" ]]; then
+      echo "❌ Error: Branch name is required."
+      return 1
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$local_branch_name"; then
+      echo "⚠️  Branch '$local_branch_name' already exists locally. Please choose another name."
+      continue
+    fi
+
+    break
+  done
+
+  if ! git checkout -b "$local_branch_name" "$selected_remote_branch" 2>&1; then
+    echo "❌ Error: Failed to create and checkout local branch '$local_branch_name'."
+    return 1
+  fi
+
+  if ! git branch --set-upstream-to="$selected_remote_branch" "$local_branch_name" 2>&1; then
+    echo "❌ Error: Failed to set upstream for '$local_branch_name'."
+    return 1
+  fi
+
   echo "✅ Worktree created successfully."
   echo "📦 Repo: $selected_repo_path"
   echo "🌿 Branch: $selected_remote_branch"
   echo "🌳 Worktree: $target_path"
+  echo "📍 Local branch: $local_branch_name (tracking: $selected_remote_branch)"
   echo "📍 HEAD:"
   if ! git --no-pager log -1 --decorate --oneline; then
     echo "❌ Error: Failed to print HEAD commit."

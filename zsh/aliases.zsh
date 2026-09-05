@@ -2,6 +2,7 @@
 # Shell & Navigation Aliases
 # ==============================================================================
 alias src='source ~/.zshrc'
+alias zreset='rm -f ~/.zcompdump && exec zsh'
 alias zrc='nvim ~/.dotfiles/zsh/zshrc'
 alias als='nvim ~/.dotfiles/zsh/aliases.zsh'
 alias fns='nvim ~/.dotfiles/zsh/functions.zsh'
@@ -9,7 +10,6 @@ alias h='history'
 alias p='pwd'
 alias cl='clear'
 alias rl='readlink -f'
-
 # Directory Navigation
 alias u='cd ..'
 alias uu='cd ../../'
@@ -59,3 +59,5 @@ alias gl='git log --oneline -n'
 alias gco='git checkout'
 alias gwr='git worktree remove'
 
+# open code
+alias code="nutanix-harness"

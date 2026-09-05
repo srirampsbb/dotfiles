@@ -1,14 +1,12 @@
+export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
+export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
+export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
+export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
 export LANG="en_US.UTF-8"
 
 # Keep PATH and FPATH entries unique (no duplicates)
 typeset -U path PATH fpath FPATH
 # Tool Flags & Compilers
-
-### MANAGED BY RANCHER DESKTOP END (DO NOT EDIT)
-# ==============================================================================
-# PROMPT & COMPLETIONS
-# ==============================================================================
-export PROMPT='%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
 
 # ==============================================================================
 # SOURCE DOTFILES & MODULES
@@ -25,6 +23,8 @@ if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
   done
 fi
 
+# cargo
+source "$HOME/.cargo/env"
 
 # Completion Styles
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' # Case-insensitive
@@ -64,20 +64,18 @@ for dir in \
   [[ -d "$dir" ]] && FPATH="$dir:$FPATH"
 done
 
-# Run compinit once; skip on reload to avoid ~35s compdump penalty per call
+# Run compinit once per session with -C (skip security audit, use cached dump).
+# To force a full rebuild after installing new completions: rm ~/.zcompdump && exec zsh
 if [[ -z "$_ZSHRC_COMPINIT_DONE" ]]; then
   autoload -Uz compinit
-  if [[ -n ~/.zcompdump(#qN.mh+24) ]]; then
-    compinit
-  else
-    compinit -C
-  fi
+  compinit -C
   _ZSHRC_COMPINIT_DONE=1
 fi
 
-# 3. FZF Integration (AFTER compinit)
-if command -v fzf &>/dev/null; then
+# 3. FZF Integration (AFTER compinit) — guard avoids 5ms fork on reload
+if [[ -z "$_FZF_ZSH_LOADED" ]] && command -v fzf &>/dev/null; then
   source <(fzf --zsh)
+  _FZF_ZSH_LOADED=1
 fi
 
 # Plugins: load once only — re-sourcing stacks widget wrappers (O(n²) slowdown)
