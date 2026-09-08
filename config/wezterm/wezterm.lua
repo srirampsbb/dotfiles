@@ -1,7 +1,6 @@
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder()
 
-
 -- Set default window dimensions (in columns and rows)
 config.initial_cols = 120
 config.initial_rows = 35
@@ -25,7 +24,6 @@ config.color_scheme = 'Kanagawa (Gogh)'
 -- Option Key Behavior
 config.send_composed_key_when_left_alt_is_pressed = false
 config.send_composed_key_when_right_alt_is_pressed = false
-
 
 -- REQUIRED FOR macOS: Enable progressive key reporting for Ctrl + Arrows
 config.enable_csi_u_key_encoding = true
@@ -67,6 +65,12 @@ config.keys = {
     mods = 'CMD|SHIFT',
     action = wezterm.action.ActivateCommandPalette,
   },
+  -- Set to ToggleFullScreen for window-level, or TogglePaneZoomState for pane-level
+  {
+    key = 'Enter',
+    mods = 'CMD',
+    action = wezterm.action.ToggleFullScreen,
+  },
 }
 
 -- Automatically imports host details from your ~/.ssh/config
@@ -77,4 +81,5 @@ config.ssh_domains = {
     multiplexing = 'None',
   },
 }
+
 return config

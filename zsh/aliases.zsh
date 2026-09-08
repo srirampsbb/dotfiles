@@ -3,7 +3,7 @@
 # ==============================================================================
 alias src='source ~/.zshrc'
 alias zreset='rm -f ~/.zcompdump && exec zsh'
-alias zrc='nvim ~/.dotfiles/zsh/zshrc'
+alias zrc='nvim ~/.zshrc'
 alias als='nvim ~/.dotfiles/zsh/aliases.zsh'
 alias fns='nvim ~/.dotfiles/zsh/functions.zsh'
 alias h='history'
@@ -34,7 +34,7 @@ fi
 # herdr
 alias tm='herdr'
 alias tmn='herdr'
-alias her='herdr'
+alias hr='herdr'
 alias hrc='nvim ~/.config/herdr/config.toml'
 
 # Always use Neovim instead of Vim or Vi

@@ -1,9 +1,3 @@
-export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
-export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
-export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
-export PROMPT='[sriram-ubvm]%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
-export LANG="en_US.UTF-8"
-
 # Keep PATH and FPATH entries unique (no duplicates)
 typeset -U path PATH fpath FPATH
 # Tool Flags & Compilers
