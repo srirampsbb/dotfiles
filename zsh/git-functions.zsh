@@ -113,6 +113,47 @@ gwa() {
 
   local selected_remote="${selected_remote_branch%%/*}"
   local selected_branch="${selected_remote_branch#*/}"
+  local default_branch_name="${selected_branch##*/}"
+  local local_branch_name
+
+  while true; do
+    read "local_branch_name?Local branch name [$default_branch_name]: "
+    [[ -z "$local_branch_name" ]] && local_branch_name="$default_branch_name"
+
+    if ! git check-ref-format --branch "$local_branch_name" >/dev/null 2>&1; then
+      echo "❌ Error: '$local_branch_name' is not a valid branch name."
+      local_branch_name=""
+      continue
+    fi
+
+    local -a checked_out_worktrees
+    local worktree_line worktree_path
+    checked_out_worktrees=()
+    worktree_path=""
+    while IFS= read -r worktree_line; do
+      case "$worktree_line" in
+        "worktree "*) worktree_path="${worktree_line#worktree }" ;;
+        "branch refs/heads/$local_branch_name")
+          checked_out_worktrees+=("$worktree_path")
+          ;;
+      esac
+    done < <(git worktree list --porcelain 2>/dev/null)
+
+    if (( ${#checked_out_worktrees[@]} > 0 )); then
+      echo "⚠️  Branch '$local_branch_name' is already checked out at:"
+      printf '    %s\n' "${checked_out_worktrees[@]}"
+      local_branch_name=""
+      continue
+    fi
+
+    if git show-ref --verify --quiet "refs/heads/$local_branch_name"; then
+      echo "⚠️  Branch '$local_branch_name' already exists locally. Please choose another name."
+      local_branch_name=""
+      continue
+    fi
+
+    break
+  done
 
   local worktree_name
   read "worktree_name?Worktree name (relative to $worktrees_root): "
@@ -121,8 +162,8 @@ gwa() {
     return 1
   fi
 
-  if [[ "$worktree_name" == */* ]]; then
-    echo "❌ Error: Worktree name must be a single directory name (no '/')."
+  if [[ "$worktree_name" == */* || "$worktree_name" == "." || "$worktree_name" == ".." ]]; then
+    echo "❌ Error: Worktree name must be a single directory name."
     return 1
   fi
 
@@ -132,8 +173,21 @@ gwa() {
   fi
 
   local target_path="$worktrees_root/$worktree_name"
-  if [[ -e "$target_path" ]]; then
+  if [[ -e "$target_path" || -L "$target_path" ]]; then
     echo "❌ Error: Path '$target_path' already exists."
+    return 1
+  fi
+
+  echo
+  echo "Worktree configuration:"
+  echo "  Repo:          $selected_repo_path"
+  echo "  Base branch:   $selected_remote_branch"
+  echo "  Local branch:  $local_branch_name"
+  echo "  Worktree:      $target_path"
+  local confirmation
+  read "confirmation?Create this worktree? [y/N]: "
+  if [[ ! "$confirmation" =~ '^[Yy]$' ]]; then
+    echo "❌ Cancelled."
     return 1
   fi
 
@@ -149,8 +203,8 @@ gwa() {
   fi
 
   local add_output
-  echo "🌳 Creating worktree from latest '$selected_remote_branch'..."
-  if ! add_output="$(git worktree add --detach "$target_path" "$selected_remote_branch" 2>&1)"; then
+  echo "🌳 Creating branch '$local_branch_name' and worktree from '$selected_remote_branch'..."
+  if ! add_output="$(git worktree add --track -b "$local_branch_name" "$target_path" "$selected_remote_branch" 2>&1)"; then
     echo "❌ Error: Failed to create worktree."
     echo "$add_output"
     return 1
@@ -158,32 +212,6 @@ gwa() {
 
   if ! cd "$target_path"; then
     echo "❌ Error: Worktree created but failed to switch to '$target_path'."
-    return 1
-  fi
-
-  local local_branch_name
-  while true; do
-    read "local_branch_name?Local branch name: "
-    if [[ -z "$local_branch_name" ]]; then
-      echo "❌ Error: Branch name is required."
-      return 1
-    fi
-
-    if git show-ref --verify --quiet "refs/heads/$local_branch_name"; then
-      echo "⚠️  Branch '$local_branch_name' already exists locally. Please choose another name."
-      continue
-    fi
-
-    break
-  done
-
-  if ! git checkout -b "$local_branch_name" "$selected_remote_branch" 2>&1; then
-    echo "❌ Error: Failed to create and checkout local branch '$local_branch_name'."
-    return 1
-  fi
-
-  if ! git branch --set-upstream-to="$selected_remote_branch" "$local_branch_name" 2>&1; then
-    echo "❌ Error: Failed to set upstream for '$local_branch_name'."
     return 1
   fi
 
@@ -327,9 +355,17 @@ gwl() {
   fi
 
   local name_col=26
-  local repo_col=52
+  local repo_col=16
   local branch_col=42
   local sep=$'\x1f'
+
+  local repo_name
+  for repo_name in "${repos[@]}"; do
+    if (( ${#repo_name} > repo_col )); then
+      repo_col=${#repo_name}
+    fi
+  done
+  (( repo_col > 32 )) && repo_col=32
 
   local -a menu_lines
   local header
