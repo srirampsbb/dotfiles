@@ -10,7 +10,7 @@ onboarding = false
 # Built-in themes: catppuccin, terminal, tokyo-night, dracula, nord,
 #                  gruvbox, one-dark, solarized, kanagawa, rose-pine,
 #                  vesper
-name = "gruvbox"
+name = "catppuccin"
 
 # Follow host terminal light/dark appearance and switch Herdr UI themes.
 # Existing manual behavior is unchanged unless this is true.
@@ -140,12 +140,6 @@ rename_tab = "prefix+period"
 # tabs = ""       # e.g. "ctrl" makes ctrl+1..9 switch tabs directly
 # workspaces = "" # e.g. "ctrl+shift" makes ctrl+shift+1..9 switch workspaces directly
 # agents = ""     # e.g. "alt" makes alt+1..9 focus agent rows directly
-
-
-
-[worktrees]
-directory = "~/code/worktrees"
-
 
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)

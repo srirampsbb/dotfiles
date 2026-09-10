@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "theme": "transparent",
+  "keybinds": {
+    "messages_page_up": "ctrl+u",
+    "messages_page_down": "ctrl+d"
+  },
+  "cursor": {
+    "style": "line",
+    "blinking": true
+  }
+}

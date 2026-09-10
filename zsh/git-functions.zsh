@@ -1,8 +1,146 @@
 # ==============================================================================
 # Git Worktree Automation
 # ==============================================================================
+
+# Checkout a Gerrit CR in a new worktree
+#
+# Parses a Gerrit change URL like:
+#   https://nugerrit.ntnxdpro.com/c/main/+/592326
+# and creates a new worktree under ~/code/worktrees with a local branch.
+#
+# Usage:
+#   checkout-gerrit-cr <gerrit-change-url>
+#
+# Examples:
+#   checkout-gerrit-cr "https://nugerrit.ntnxdpro.com/c/main/+/592326"
+checkout-gerrit-cr() {
+  setopt localoptions noxtrace
+
+  if [[ $# -lt 1 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    cat <<'EOF'
+Usage:
+  checkout-gerrit-cr <gerrit-change-url>
+
+Creates a new git worktree containing the given Gerrit Change Request (CR).
+
+The change URL must look like:
+  https://nugerrit.ntnxdpro.com/c/<repo>/+/<change-number>
+
+The worktree will be created under:
+  ~/code/worktrees/<repo>-cr<change-number>
+
+A local branch named 'cr-<change-number>' is created from the fetched patch set.
+EOF
+    return 1
+  fi
+
+  local url="$1"
+
+  # Validate basic URL format
+  if [[ "$url" != *nugerrit.ntnxdpro.com/c/*/+/* ]]; then
+    echo "❌ Error: URL does not look like a nugerrit change URL."
+    echo "   Expected: https://nugerrit.ntnxdpro.com/c/<repo>/+/<change-number>"
+    return 1
+  fi
+
+  # Extract repo and change number from URL
+  local repo
+  repo="$(echo "$url" | sed -E 's|.*/c/([^/]+)/.*|\1|')"
+
+  local change_num
+  change_num="$(echo "$url" | grep -oE '[0-9]+' | tail -1)"
+
+  if [[ -z "$repo" ]] || [[ -z "$change_num" ]]; then
+    echo "❌ Error: Could not parse repo and change number from URL."
+    return 1
+  fi
+
+  local last_two=${change_num: -2}
+  local ref_base="refs/changes/$last_two/$change_num"
+  local ref_ps1="$ref_base/1"
+  local ref_ps2="$ref_base/2"
+
+  local worktrees_root="$HOME/code/worktrees"
+  local target_path="$worktrees_root/${repo}-cr${change_num}"
+  local branch_name="cr-${change_num}"
+
+  # Check if worktree path already exists
+  if [[ -e "$target_path" || -L "$target_path" ]]; then
+    echo "❌ Error: Worktree path '$target_path' already exists."
+    return 1
+  fi
+
+  # Check for duplicate branch across existing worktrees
+  local existing
+  existing="$(git worktree list --porcelain 2>/dev/null | grep "branch refs/heads/$branch_name")"
+  if [[ -n "$existing" ]]; then
+    echo "❌ Error: Branch '$branch_name' is already checked out in a worktree."
+    return 1
+  fi
+
+  echo "🔄 Fetching change $change_num from Gerrit..."
+  local fetch_output
+  local dst_ref="refs/gerrit-tmp/cr-${change_num}"
+  
+  # Use the Gerrit URL with credentials (as recommended by Gerrit UI)
+  local remote_url
+  remote_url="$(git remote get-url origin 2>/dev/null)"
+  
+  # Try fetching patch set 1 first (most common)
+  if ! fetch_output="$(git fetch origin "$ref_ps1:$dst_ref" 2>&1)"; then
+    # Try patch set 2
+    if ! fetch_output="$(git fetch origin "$ref_ps2:$dst_ref" 2>&1)"; then
+      echo "⚠️  Could not fetch via origin, trying direct Gerrit host..."
+      # Parse credentials from remote URL and construct gerrit URL
+      local gerrit_url
+      if [[ "$remote_url" == https://*@* ]]; then
+        # Extract user@ from the URL
+        local auth="${remote_url#*//}"
+        auth="${auth%%@*}"
+        gerrit_url="https://${auth}@nugerrit.ntnxdpro.com/a/$repo"
+      elif [[ "$remote_url" == https://* ]]; then
+        gerrit_url="https://nugerrit.ntnxdpro.com/a/$repo"
+      else
+        gerrit_url="https://sriram.ravichandran@nugerrit.ntnxdpro.com/a/$repo"
+      fi
+      
+      # Try fetching from Gerrit host directly
+      if ! fetch_output="$(git fetch "$gerrit_url" "$ref_ps1:$dst_ref" 2>&1)"; then
+        if ! fetch_output="$(git fetch "$gerrit_url" "$ref_ps2:$dst_ref" 2>&1)"; then
+          echo "❌ Error: Failed to fetch ref '$ref_ps1' from origin or Gerrit host."
+          echo "$fetch_output"
+          return 1
+        fi
+      fi
+    fi
+  fi
+
+  echo "🌳 Creating worktree '$target_path' with branch '$branch_name'..."
+  local add_output
+  if ! add_output="$(git worktree add -b "$branch_name" "$target_path" "$dst_ref" 2>&1)"; then
+    echo "❌ Error: Failed to create worktree."
+    echo "$add_output"
+    return 1
+  fi
+
+  echo "✅ Worktree created successfully."
+  echo "📦 Repo: $(git remote get-url origin 2>/dev/null)"
+  echo "🌿 Branch: $branch_name"
+  echo "🌳 Worktree: $target_path"
+  echo "🔖 Change: $change_num"
+  echo "📍 HEAD:"
+  if ! git --no-pager log -1 --decorate --oneline 2>/dev/null; then
+    echo "❌ Warning: Failed to print HEAD commit."
+  fi
+}
+
 # Prevent alias/function name collisions during shell reload.
-unalias cdr cdw gwo gwa gwl gbs 2>/dev/null
+   unalias cdr cdw gwo gwa gwl gws gwr gbs gpush cocr 2>/dev/null
+
+# Alias for checkout-gerrit-cr
+alias cocr='checkout-gerrit-cr'
+alias gwl='gws --list'
+alias gwr='gws --remove'
 
 # Fuzzy switch to a repository under ~/code/repos
 #
@@ -38,14 +176,14 @@ cdr() {
 #
 # Usage: cdw
 cdw() {
-  gwl "$@"
+  gws "$@"
 }
 
 # Worktree menu shortcut
 #
 # Usage: gwo
 gwo() {
-  gwl "$@"
+  gws "$@"
 }
 
 # Usage: gwa
@@ -111,12 +249,19 @@ gwa() {
     return 1
   fi
 
-  local selected_remote="${selected_remote_branch%%/*}"
-  local selected_branch="${selected_remote_branch#*/}"
-  local default_branch_name="${selected_branch##*/}"
-  local local_branch_name
+   local selected_remote="${selected_remote_branch%%/*}"
+   local selected_branch="${selected_remote_branch#*/}"
+   local default_branch_name="${selected_branch##*/}"
+   local local_branch_name
 
-  while true; do
+   local remote_url
+   remote_url="$(git remote get-url "$selected_remote" 2>/dev/null)"
+   local is_gerrit=0
+   if [[ "$remote_url" == *nugerrit.ntnxdpro.com* ]]; then
+      is_gerrit=1
+   fi
+
+   while true; do
     read "local_branch_name?Local branch name [$default_branch_name]: "
     [[ -z "$local_branch_name" ]] && local_branch_name="$default_branch_name"
 
@@ -142,12 +287,6 @@ gwa() {
     if (( ${#checked_out_worktrees[@]} > 0 )); then
       echo "⚠️  Branch '$local_branch_name' is already checked out at:"
       printf '    %s\n' "${checked_out_worktrees[@]}"
-      local_branch_name=""
-      continue
-    fi
-
-    if git show-ref --verify --quiet "refs/heads/$local_branch_name"; then
-      echo "⚠️  Branch '$local_branch_name' already exists locally. Please choose another name."
       local_branch_name=""
       continue
     fi
@@ -202,39 +341,57 @@ gwa() {
     return 1
   fi
 
-  local add_output
-  echo "🌳 Creating branch '$local_branch_name' and worktree from '$selected_remote_branch'..."
-  if ! add_output="$(git worktree add --track -b "$local_branch_name" "$target_path" "$selected_remote_branch" 2>&1)"; then
-    echo "❌ Error: Failed to create worktree."
-    echo "$add_output"
-    return 1
-  fi
+   local add_output
+   if (( is_gerrit)); then
+     echo "🌳 Creating branch '$local_branch_name' and worktree from '$selected_remote_branch' (Gerrit - no tracking)..."
+     if ! add_output="$(git worktree add -b "$local_branch_name" "$target_path" "$selected_remote_branch" 2>&1)"; then
+       echo "❌ Error: Failed to create worktree."
+       echo "$add_output"
+       return 1
+     fi
+   else
+     echo "🌳 Creating branch '$local_branch_name' and worktree from '$selected_remote_branch'..."
+     if ! add_output="$(git worktree add --track -b "$local_branch_name" "$target_path" "$selected_remote_branch" 2>&1)"; then
+       echo "❌ Error: Failed to create worktree."
+       echo "$add_output"
+       return 1
+     fi
+   fi
 
-  if ! cd "$target_path"; then
-    echo "❌ Error: Worktree created but failed to switch to '$target_path'."
-    return 1
-  fi
+   if ! cd "$target_path"; then
+     echo "❌ Error: Worktree created but failed to switch to '$target_path'."
+     return 1
+   fi
 
-  echo "✅ Worktree created successfully."
-  echo "📦 Repo: $selected_repo_path"
-  echo "🌿 Branch: $selected_remote_branch"
-  echo "🌳 Worktree: $target_path"
-  echo "📍 Local branch: $local_branch_name (tracking: $selected_remote_branch)"
-  echo "📍 HEAD:"
+   echo "✅ Worktree created successfully."
+   echo "📦 Repo: $selected_repo_path"
+   echo "🌿 Branch: $selected_remote_branch"
+   echo "🌳 Worktree: $target_path"
+   if (( is_gerrit)); then
+      echo "📍 Local branch: $local_branch_name (not publishing - gerrit remote)"
+   else
+     echo "📍 Local branch: $local_branch_name (tracking: $selected_remote_branch)"
+   fi
+   echo "📍 HEAD:"
   if ! git --no-pager log -1 --decorate --oneline; then
     echo "❌ Error: Failed to print HEAD commit."
     return 1
   fi
 }
 
-# List recent worktrees with repo, remote branch, and last modified time
+# Select a worktree to switch to, list, or remove
 #
-# Usage: gwl
-gwl() {
+# Usage: gws | gwl | gwr
+gws() {
   emulate -L zsh
+  local mode="switch"
+  case "$1" in
+    --list) mode="list" ;;
+    --remove) mode="remove" ;;
+  esac
   setopt localoptions noxtrace
   set +x 2>/dev/null
-  functions +t gwl 2>/dev/null
+  functions +t gws 2>/dev/null
 
   local worktrees_root="$HOME/code/worktrees"
   local legacy_worktrees_root="$HOME/code/wortkrees"
@@ -324,16 +481,10 @@ gwl() {
         repo_display="${repo_display%.git}"
       fi
 
-      local upstream_branch
-      upstream_branch="$(git -C "$wt_path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"
-      if [[ -n "$upstream_branch" ]]; then
-        branch_display="$upstream_branch"
-      else
-        local pointed_remote
-        pointed_remote="$(git -C "$wt_path" for-each-ref --format='%(refname:short)' --points-at HEAD refs/remotes 2>/dev/null | sed -n '1p')"
-        if [[ -n "$pointed_remote" ]]; then
-          branch_display="$pointed_remote"
-        fi
+      local local_branch
+      local_branch="$(git -C "$wt_path" branch --show-current 2>/dev/null)"
+      if [[ -n "$local_branch" ]]; then
+        branch_display="$local_branch"
       fi
     fi
 
@@ -349,14 +500,9 @@ gwl() {
 
   done
 
-  if ! command -v fzf >/dev/null 2>&1; then
-    echo "❌ Error: 'fzf' is required to choose a worktree from the menu."
-    return 1
-  fi
-
   local name_col=26
   local repo_col=16
-  local branch_col=42
+  local branch_col=26
   local sep=$'\x1f'
 
   local repo_name
@@ -370,7 +516,7 @@ gwl() {
   local -a menu_lines
   local header
   header="$(printf "%-${name_col}s  %-${repo_col}s  %-${branch_col}s  %s" \
-    "WORKTREE" "REPO" "REMOTE BRANCH" "LAST MODIFIED")"
+         "WORKTREE" "REPO" "LOCAL BRANCH" "LAST MODIFIED")"
   menu_lines=("${header}${sep}__HEADER__")
 
   local name_view repo_view branch_view display_line
@@ -394,11 +540,24 @@ gwl() {
     menu_lines+=("${display_line}${sep}${paths[$i]}")
   done
 
+  if [[ "$mode" == "list" ]]; then
+    printf "%s\n" "${menu_lines[@]%%$sep*}"
+    return 0
+  fi
+
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "❌ Error: 'fzf' is required to choose a worktree from the menu."
+    return 1
+  fi
+
+  local fzf_prompt="Select worktree > "
+  [[ "$mode" == "remove" ]] && fzf_prompt="Remove worktree > "
+
   local selected_line selected_path
   selected_line="$(
     printf "%s\n" "${menu_lines[@]}" \
       | fzf \
-        --prompt="Select worktree > " \
+        --prompt="$fzf_prompt" \
         --height=55% \
         --reverse \
         --delimiter="$sep" \
@@ -411,6 +570,17 @@ gwl() {
   fi
 
   selected_path="${selected_line##*$sep}"
+  if [[ "$mode" == "remove" ]]; then
+    local confirmation=""
+    read "confirmation?Remove worktree '$selected_path'? [y/N]: "
+    if [[ ! "$confirmation" =~ '^[Yy]$' ]]; then
+      echo "❌ Cancelled."
+      return 1
+    fi
+    git worktree remove "$selected_path"
+    return $?
+  fi
+
   if ! cd "$selected_path"; then
     echo "❌ Error: Failed to switch to worktree '$selected_path'."
     return 1
@@ -447,9 +617,88 @@ gbs() {
     # - Auto-selects if only 1 match exists (--select-1)
     # - Exits cleanly without error if no match is found (--exit-0)
     git branch -r --format="%(refname:short)" | fzf --query="$search_term" --select-1 --exit-0
-  else
-    # Non-Interactive Fallback Mode:
-    # - Uses case-insensitive extended regex matching via grep
-    git branch -r --format="%(refname:short)" | grep -iE "$search_term"
-  fi
+   else
+     # Non-Interactive Fallback Mode:
+     # - Uses case-insensitive extended regex matching via grep
+     git branch -r --format="%(refname:short)" | grep -iE "$search_term"
+   fi
 }
+
+   # Push to remote: handles both GitHub and Gerrit remotes.
+   #   - GitHub: standard git push
+   #   - Gerrit: push to magic ref refs/for/<branch> to create a CR
+   #
+   # Usage:
+   #   gpush                           # Push current branch to matching remote branch
+   #   gpush <remote-branch>           # Push current branch to a specific remote branch
+   #
+   # Examples:
+   #   gpush                            # Push current local branch
+   #   gpush origin/master              # Push current branch to origin/master
+   gpush() {
+      local target_branch=""
+
+      while (( $# > 0 )); do
+         case "$1" in
+            --help|-h)
+               echo "Usage: gpush [remote-branch]"
+               return 1
+               ;;
+            *)
+               if [[ -z "$target_branch" ]]; then
+                  target_branch="$1"
+               else
+                  echo "❌ Error: Unexpected argument '$1'"
+                  return 1
+               fi
+               shift
+               ;;
+         esac
+      done
+
+      local current_branch
+      current_branch="$(git symbolic-ref --short HEAD 2>/dev/null)"
+      if [[ -z "$current_branch" ]]; then
+         echo "❌ Error: Not on a local branch (detached HEAD)."
+         return 1
+      fi
+
+      if [[ -z "$target_branch" ]]; then
+         target_branch="$current_branch"
+      fi
+
+      local remote_branch_name
+      if [[ "$target_branch" == */* ]]; then
+         remote_branch_name="${target_branch#*/}"
+      else
+         remote_branch_name="$target_branch"
+      fi
+
+      local remote_url
+      remote_url="$(git remote get-url origin 2>/dev/null)"
+      if [[ -z "$remote_url" ]]; then
+         echo "❌ Error: No remote 'origin' configured."
+         return 1
+      fi
+
+      echo "🔄 Pushing branch '$current_branch'..."
+      local push_output
+      if [[ "$remote_url" == *nugerrit.ntnxdpro.com* ]]; then
+         local gerrit_ref="refs/for/$remote_branch_name"
+         echo "   Gerrit remote detected - pushing to '$gerrit_ref'"
+         if ! push_output="$(git push origin "$current_branch:$gerrit_ref" 2>&1)"; then
+            echo "❌ Error: Gerrit push failed."
+            echo "$push_output"
+            return 1
+         fi
+      else
+         if ! push_output="$(git push origin "$current_branch:$target_branch" 2>&1)"; then
+            echo "❌ Error: Push failed."
+            echo "$push_output"
+            return 1
+         fi
+      fi
+
+      echo "✅ Push completed."
+      echo "$push_output"
+   }

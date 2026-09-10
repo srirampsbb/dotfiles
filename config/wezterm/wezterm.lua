@@ -5,6 +5,9 @@ local config = wezterm.config_builder()
 config.initial_cols = 120
 config.initial_rows = 35
 
+-- Set the scrollback buffer size to 10,000 lines per tab
+config.scrollback_lines = 10000
+
 -- Remove Top Bar (Hides window title bar, macOS traffic lights, and tab bar)
 config.window_decorations = "RESIZE"
 config.hide_tab_bar_if_only_one_tab = true
@@ -16,6 +19,7 @@ config.default_cursor_style = 'SteadyBar'
 
 -- macOS Translucency & Styling
 config.window_background_opacity = 0.80
+config.inactive_pane_opacity = 0.80
 config.macos_window_background_blur = 50
 -- config.color_scheme = "rose-pine-moon"
 config.color_scheme = 'Kanagawa (Gogh)'

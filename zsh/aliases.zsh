@@ -57,7 +57,6 @@ alias gpush='git push'
 alias gcafp='git commit -a --amend --no-edit && git push -f'
 alias gl='git log --oneline -n'
 alias gco='git checkout'
-alias gwr='git worktree remove'
 
 # open code
 alias code="nutanix-harness"
