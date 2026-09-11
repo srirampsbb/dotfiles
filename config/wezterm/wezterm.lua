@@ -17,16 +17,17 @@ config.font = wezterm.font("Hack Nerd Font")
 config.font_size = 15.0
 config.default_cursor_style = 'SteadyBar'
 
--- macOS Translucency & Styling
-config.window_background_opacity = 0.80
+-- Translucency & Styling
+config.window_background_opacity = 0.60
 config.inactive_pane_hsb = {
   hue = 1.0,
   saturation = 1.0,
-  brightness = 0.8, -- adjust this value to control dimming (0.0 to 1.0)
+  brightness = 0.6, -- adjust this value to control dimming (0.0 to 1.0)
 }
 config.macos_window_background_blur = 50
 -- config.color_scheme = "rose-pine-moon"
-config.color_scheme = 'Kanagawa (Gogh)'
+-- config.color_scheme = 'Kanagawa (Gogh)'
+config.color_scheme = 'Catppuccin Mocha'
 -- config.color_scheme = 'Tokyo Night'
 
 -- Option Key Behavior

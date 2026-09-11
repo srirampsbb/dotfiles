@@ -383,6 +383,7 @@ gwa() {
 #
 # Usage: gws | gwl | gwr
 gws() {
+  set +x 2>/dev/null
   emulate -L zsh
   local mode="switch"
   case "$1" in
@@ -390,7 +391,6 @@ gws() {
     --remove) mode="remove" ;;
   esac
   setopt localoptions noxtrace
-  set +x 2>/dev/null
   functions +t gws 2>/dev/null
 
   local worktrees_root="$HOME/code/worktrees"
