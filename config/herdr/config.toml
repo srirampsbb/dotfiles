@@ -142,6 +142,11 @@ rename_tab = "prefix+period"
 # agents = ""     # e.g. "alt" makes alt+1..9 focus agent rows directly
 
 [ui]
+# Custom shell command rendered on the right side of the tab bar
+tab_bar_right = [
+  { type = "hostname" },
+  { type = "datetime", format = "%Y-%m-%d %H:%M" }
+]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
 # sidebar_width = 26
 
