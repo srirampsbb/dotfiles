@@ -27,8 +27,8 @@ config.inactive_pane_hsb = {
 config.macos_window_background_blur = 50
 -- config.color_scheme = "rose-pine-moon"
 -- config.color_scheme = 'Kanagawa (Gogh)'
-config.color_scheme = 'Catppuccin Mocha'
--- config.color_scheme = 'Tokyo Night'
+-- config.color_scheme = 'Catppuccin Mocha'
+config.color_scheme = 'Tokyo Night'
 
 -- Option Key Behavior
 config.send_composed_key_when_left_alt_is_pressed = false
