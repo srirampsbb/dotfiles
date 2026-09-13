@@ -29,6 +29,18 @@ if [[ -f "$HOME/.dircolors" ]]; then
   eval "$(gdircolors -b "$HOME/.dircolors")"
 fi
 
+# Force vertical bar cursor on prompt reset (\e[5 q = blinking bar, \e[6 q = steady bar)
+_force_line_cursor() {
+  echo -ne '\e[6 q'
+}
+
+precmd_functions+=(_force_line_cursor)
+
+export PROMPT='%F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f'
+
+# set tools like git to use nvim
+export EDITOR="nvim"
+export VISUAL="nvim"
 
 # ==============================================================================
 # ZSH PLUGINS & COMPLETIONS (OS-Agnostic: macOS, Rocky Linux, Ubuntu)
