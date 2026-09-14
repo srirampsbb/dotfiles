@@ -145,7 +145,7 @@ rename_tab = "prefix+period"
 # Custom shell command rendered on the right side of the tab bar
 tab_bar_right = [
   { type = "hostname" },
-  { type = "datetime", format = "%Y-%m-%d %H:%M" }
+  { type = "datetime", format = "%m/%d %H:%M:%S" }
 ]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
 # sidebar_width = 26
