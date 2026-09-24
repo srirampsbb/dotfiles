@@ -16,9 +16,13 @@ config.hide_tab_bar_if_only_one_tab = true
 config.font = wezterm.font("Hack Nerd Font")
 config.font_size = 15.0
 config.default_cursor_style = 'SteadyBar'
+-- Set background to pure black
+config.colors = {
+  background = '#000000',
+}
 
 -- Translucency & Styling
-config.window_background_opacity = 0.80
+config.window_background_opacity = 0.60
 config.inactive_pane_hsb = {
   hue = 1.0,
   saturation = 1.0,
@@ -36,6 +40,12 @@ config.send_composed_key_when_right_alt_is_pressed = false
 
 -- REQUIRED FOR macOS: Enable progressive key reporting for Ctrl + Arrows
 config.enable_csi_u_key_encoding = true
+
+-- Disable confirmation prompt when closing a window
+config.window_close_confirmation = 'NeverPrompt'
+
+-- Keep the macOS app process running when all tabs/windows are closed
+config.quit_when_all_windows_are_closed = false
 
 -- Native macOS Shortcuts & Text Navigation
 config.keys = {
