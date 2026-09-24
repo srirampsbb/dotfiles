@@ -41,13 +41,13 @@ alias hrc='nvim ~/.config/herdr/config.toml'
 alias vim="nvim"
 alias vi="nvim"
 alias nv="nvim"
-alias nvi="nvim /Users/sriram.ravichandran/.dotfiles/config/nvim/init.lua"
+alias nvc="nvim /Users/sriram.ravichandran/.dotfiles/config/nvim/init.lua"
 
 # ==============================================================================
 # Git Aliases
 # ==============================================================================
 alias gs='git status'
-alias gsu='git status -uno'
+alias gsu='git submodule update --init --recursive'
 alias gb='git branch'
 alias gd='git diff HEAD'
 alias gc='git commit -a'
@@ -58,5 +58,5 @@ alias gcafp='git commit -a --amend --no-edit && git push -f'
 alias gl='git log --oneline -n'
 alias gco='git checkout'
 
-# open code
-alias code="nutanix-harness"
+# wezterm
+alias wzc='nvim ~/.config/wezterm/wezterm.lua'
