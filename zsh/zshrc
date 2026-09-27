@@ -10,9 +10,9 @@ for file in "$HOME/.dotfiles/zsh"/*.zsh; do
   [[ -r "$file" ]] && source "$file"
 done
 
-# Load Nutanix local overrides (*ntnx*.zsh)
+# Load local overrides (*ntnx*.zsh)
 if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
-  for file in "$HOME/.dotfiles/zsh/local"/*ntnx*.zsh; do
+  for file in "$HOME/.dotfiles/zsh/local"/*.zsh; do
     [[ -r "$file" ]] && source "$file"
   done
 fi
