@@ -24,37 +24,48 @@ _jira_list_projects() {
 
 jira() {
   _jira_validate_env || return 1
+  set +x 2>/dev/null
 
   if ! _jira_authenticate; then
     echo "Error: Jira authentication failed. Please check JIRA_TOKEN and JIRA_BASE_URL."
     return 1
   fi
 
-  if [ $# -eq 0 ]; then
+  if [ $# -gt 0 ]; then
+    local cmd="$1"
+    shift
+    case "$cmd" in
+      help|list)
+        _jira_menu
+        return
+        ;;
+      describe_ticket|create_ticket|update_ticket|my_resolved_tickets|my_filed_tickets|my_open_tickets|show_epic_summary)
+        $cmd "$@"
+        return
+        ;;
+      *)
+        echo "Error: Unknown Jira command '$cmd'. Type 'jira help' to see available operations."
+        return 1
+        ;;
+    esac
+  fi
+
+  # Iterative menu mode
+  while true; do
     local selection
     selection=$(_jira_menu_fzf)
     if [ -z "$selection" ]; then
-      echo "No operation selected."
-      return 1
+      echo "No operation selected. Exiting."
+      return 0
+    fi
+    if [ "$selection" = "Exit" ]; then
+      echo "Exiting Jira menu."
+      return 0
     fi
     $selection
-    return
-  fi
-
-  local cmd="$1"
-  shift
-  case "$cmd" in
-    help|list)
-      _jira_menu
-      ;;
-    describe_ticket|create_ticket|update_ticket|my_resolved_tickets|my_filed_tickets|my_open_tickets|show_epic_summary)
-      $cmd "$@"
-      ;;
-    *)
-      echo "Error: Unknown Jira command '$cmd'. Type 'jira help' to see available operations."
-      return 1
-      ;;
-  esac
+    echo ""
+    echo "Operation complete. Returning to menu..."
+  done
 }
 
 _jira_authenticate() {
@@ -81,6 +92,7 @@ my_resolved_tickets|List tickets you resolved in a timeframe
 my_filed_tickets|List tickets you reported in a timeframe
 my_open_tickets|List your unresolved assigned tickets
 show_epic_summary|List all tickets linked to an Epic
+exit|Exit the Jira menu
 EOF
 )
   printf '%s\n' "$items" | while IFS='|' read -r name desc; do
@@ -96,7 +108,8 @@ _jira_menu_fzf() {
     "my_resolved_tickets|List tickets you resolved in a timeframe" \
     "my_filed_tickets|List tickets you reported in a timeframe" \
     "my_open_tickets|List your unresolved assigned tickets" \
-    "show_epic_summary|List all tickets linked to an Epic" | \
+    "show_epic_summary|List all tickets linked to an Epic" \
+    "Exit|Exit the Jira menu" | \
     fzf --prompt="Jira Operation > " --height=50% --reverse --border \
       --delimiter='|' --with-nth=1,2 --preview='echo {}' )
   if [ -z "$selection" ]; then
@@ -112,26 +125,35 @@ _jira_menu_fzf() {
 # ------------------------------------------------------------------------------
 describe_ticket() {
   _jira_validate_env || return 1
+  emulate -L zsh
+  set +x 2>/dev/null
 
-  if [ -z "$1" ]; then
-    echo "Usage: describe_ticket <TICKET_KEY>"
-    echo "Examples:"
-    echo "  describe_ticket clstr-15888"
-    echo "  describe_ticket ENG-1234"
+  local ISSUE=""
+
+  if [ -n "$1" ]; then
+    ISSUE="$1"
+  else
+    echo -n "Ticket Key > "
+    read -r ISSUE
+  fi
+
+  if [ -z "$ISSUE" ]; then
+    echo "Error: Ticket key is required."
     return 1
   fi
 
   # Reject standalone numerical inputs without a project key
-  if [[ "$1" =~ ^[0-9]+$ ]]; then
-    echo "Error: Please provide a full ticket key (e.g., CLSTR-$1 or ENG-$1)."
+  if [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+    echo "Error: Please provide a full ticket key (e.g., CLSTR-$ISSUE or ENG-$ISSUE)."
     return 1
   fi
 
   # Normalize issue key to uppercase
-  local ISSUE="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  ISSUE="$(echo "$ISSUE" | tr '[:lower:]' '[:upper:]')"
 
   echo "Fetching $ISSUE..."
-  local RAW_RESPONSE FIELD_METADATA_FILE FORMAT_STATUS
+
+  local RAW_RESPONSE FIELD_METADATA_FILE
   RAW_RESPONSE=$(curl -s -H "Authorization: Bearer $JIRA_TOKEN" \
     "${JIRA_BASE_URL}/rest/api/2/issue/$ISSUE")
   FIELD_METADATA_FILE=$(mktemp "${TMPDIR:-/tmp}/jira-fields.XXXXXX") || {
@@ -143,11 +165,87 @@ describe_ticket() {
 
   if [ -z "$RAW_RESPONSE" ]; then
     rm -f "$FIELD_METADATA_FILE"
-
     echo "Error: Received empty response from Jira server."
     return 1
   fi
 
+  # Check for API errors
+  if ! printf '%s' "$RAW_RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+    rm -f "$FIELD_METADATA_FILE"
+    echo "Error: Received invalid JSON payload from Jira server."
+    return 1
+  fi
+
+  if printf '%s' "$RAW_RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+    local _err
+    _err=$(printf '%s' "$RAW_RESPONSE" | jq -r '.errorMessages[0]' 2>/dev/null)
+    rm -f "$FIELD_METADATA_FILE"
+    echo "Error: $_err"
+    return 1
+  fi
+
+  local RAW_DATA_FILE
+  RAW_DATA_FILE=$(mktemp "${TMPDIR:-/tmp}/jira-data.XXXXXX")
+  printf '%s' "$RAW_RESPONSE" > "$RAW_DATA_FILE"
+
+  # Nested menu loop for sub-operations
+  while true; do
+    local sub_selection
+     sub_selection=$(printf '%s\n' \
+       "view_summary|View Summary (ticket details)" \
+       "view_description|View Description" \
+       "view_comments|View Last 5 Comments" \
+       "view_review_links|View Review Links (GitHub & Gerrit URLs)" \
+       "back|Back to Main Menu" | \
+       fzf --prompt="Ticket Sub-Operation > " --height=50% --reverse --border \
+         --delimiter='|' --with-nth=1,2)
+
+    if [ -z "$sub_selection" ]; then
+      break
+    fi
+
+    local _sub_op="${sub_selection%%|*}"
+
+    case "$_sub_op" in
+      view_summary)
+        _jira_describe_ticket_summary "$ISSUE" "$RAW_DATA_FILE" "$FIELD_METADATA_FILE"
+        ;;
+      view_description)
+        _jira_describe_ticket_description "$RAW_DATA_FILE"
+        ;;
+      view_comments)
+        _jira_describe_ticket_comments "$RAW_DATA_FILE"
+        ;;
+      view_review_links)
+        _jira_describe_ticket_review_links "$ISSUE" "$RAW_DATA_FILE"
+        ;;
+      back)
+        break
+        ;;
+      *)
+        echo "Unknown sub-operation: $_sub_op"
+        ;;
+    esac
+
+     echo ""
+  done
+
+  rm -f "$FIELD_METADATA_FILE" "$RAW_DATA_FILE"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Summary
+# Shows full ticket details (same as the original describe_ticket output)
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_summary() {
+  set +x 2>/dev/null
+  local ISSUE="$1"
+  local RAW_DATA_FILE="$2"
+  local FIELD_METADATA_FILE="$3"
+
+  echo "--------------------------------------------------------------------------------"
+  echo "Ticket Summary - $ISSUE"
+  echo "--------------------------------------------------------------------------------"
   python3 -c '
 import json
 import os
@@ -155,12 +253,18 @@ import sys
 import urllib.error
 import urllib.request
 
-jira_token = sys.argv[2]
+jira_token = sys.argv[3]
+jira_base_url = sys.argv[4]
+issue_key = sys.argv[5]
+
+with open(sys.argv[1], encoding="utf-8") as metadata_file:
+    metadata = json.load(metadata_file)
+
+with open(sys.argv[2], encoding="utf-8") as data_file:
+    raw_response = data_file.read()
 
 try:
-    data = json.loads(sys.stdin.read())
-    with open(sys.argv[1], encoding="utf-8") as metadata_file:
-        metadata = json.load(metadata_file)
+    data = json.loads(raw_response)
 except Exception:
     print("Error: Received invalid JSON payload from server.")
     sys.exit(1)
@@ -254,7 +358,7 @@ display_fields.append(("Epic Link", display_value(epic_link)))
 if isinstance(epic_link, str) and epic_link:
     try:
         request = urllib.request.Request(
-            "${JIRA_BASE_URL}/rest/api/2/issue/" + epic_link + "?fields=summary",
+            jira_base_url + "/rest/api/2/issue/" + epic_link + "?fields=summary",
             headers={"Authorization": "Bearer " + jira_token}
         )
         with urllib.request.urlopen(request) as epic_response:
@@ -275,10 +379,157 @@ for label, value in display_fields:
 print("================================================================================")
 print("DESCRIPTION:\n" + str(description))
 print("================================================================================")
-' "$FIELD_METADATA_FILE" "$JIRA_TOKEN" <<< "$RAW_RESPONSE"
-  FORMAT_STATUS=$?
-  rm -f "$FIELD_METADATA_FILE"
-  return $FORMAT_STATUS
+' "$FIELD_METADATA_FILE" "$RAW_DATA_FILE" "$JIRA_TOKEN" "$JIRA_BASE_URL" "$ISSUE"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Description
+# Shows just the ticket description
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_description() {
+  set +x 2>/dev/null
+  local RAW_DATA_FILE="$1"
+
+  echo "--------------------------------------------------------------------------------"
+  echo "Ticket Description:"
+  echo "--------------------------------------------------------------------------------"
+  cat "$RAW_DATA_FILE" | jq -r '.fields.description // "No description provided."' 2>/dev/null | \
+    sed 's/\r$//' | fold -w 120
+  echo ""
+  echo "================================================================================"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Comments
+# Shows the last 5 comments, each truncated to 200 characters
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_comments() {
+  {
+    set +x
+    local RAW_DATA_FILE="$1"
+    
+    # Get comment count
+    local total
+    total=$(cat "$RAW_DATA_FILE" | jq -r '.fields.comment.total // 0' 2>/dev/null)
+    echo "--------------------------------------------------------------------------------"
+    echo "Comments - Last 5 (most recent first)"
+    echo "--------------------------------------------------------------------------------"
+    echo "Total comments: $total"
+
+    if [ "$total" -eq 0 ] 2>/dev/null; then
+      echo "No comments on this ticket."
+      echo "================================================================================"
+      return 0
+    fi
+
+local idx=1
+    # Process comments - show most RECENT 5 comments (newest first)
+    local comment_count
+    comment_count=$(cat "$RAW_DATA_FILE" | jq -r '.fields.comment.comments | length' 2>/dev/null)
+    
+    # Calculate start index for last 5 comments
+    local start_idx=$((comment_count - 5))
+    [ "$start_idx" -lt 0 ] && start_idx=0
+    
+    # Iterate from highest index (most recent) down to start_idx
+    local array_idx=$((comment_count - 1))
+    while [ "$idx" -le 5 ] && [ "$array_idx" -ge "$start_idx" ]; do
+      # Process each comment without exposing trace
+      _jira_process_single_comment "$RAW_DATA_FILE" "$array_idx" "$idx"
+      idx=$((idx + 1))
+      array_idx=$((array_idx - 1))
+    done
+
+    echo "================================================================================"
+  } 2>/dev/null
+}
+__jira_safe_jq() {
+  local file="$1"
+  local filter="$2"
+  cat "$file" | jq -r "$filter" 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# Process a single comment without exposing trace output
+# ------------------------------------------------------------------------------
+_jira_process_single_comment() {
+  set +x 2>/dev/null
+  local RAW_DATA_FILE="$1"
+  local array_idx="$2"
+  local idx="$3"
+  
+  local author_name created_date body
+  author_name=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].author.displayName // .fields.comment.comments[$array_idx].author.name" 2>/dev/null)
+  created_date=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].created" 2>/dev/null)
+  body=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].body" 2>/dev/null)
+
+  echo "----- Comment $idx: $author_name ($created_date) -----"
+  echo "$body" | cut -c1-200 | fold -w 80 | head -n 5
+  echo ""
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Review Links
+# Finds all GitHub and Gerrit URLs in the ticket description and comments
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_review_links() {
+  set +x 2>/dev/null
+  local ISSUE="$1"
+  local RAW_DATA_FILE="$2"
+
+  echo "--------------------------------------------------------------------------------"
+  echo "Review Links - $ISSUE"
+  echo "--------------------------------------------------------------------------------"
+  echo "Searching for GitHub and Gerrit review links in ticket $ISSUE..."
+
+  # Extract all string values from the entire JSON response
+  local all_text
+  all_text=$(cat "$RAW_DATA_FILE" | jq -r '
+    [paths(scalars) as $path | getpath($path) | select(type == "string" and length > 10)] | join("\n")
+  ' 2>/dev/null)
+
+  if [ -z "$all_text" ]; then
+    echo "No text content found in description or comments."
+    echo "================================================================================"
+    return 0
+  fi
+
+  echo "================================================================================"
+  local found_links=false
+
+   # Search for GitHub URLs (github.com)
+  local github_urls
+  github_urls=$(printf '%s' "$all_text" | grep -oiE 'https?://(?:www\.)?github\.com/[a-zA-Z0-9/_@.~+-]*' 2>/dev/null | sort -u)
+
+  if [ -n "$github_urls" ]; then
+    echo "GitHub Review Links:"
+    echo "--------------------"
+    while IFS= read -r url; do
+      [ -n "$url" ] && echo "  $url"
+    done <<< "$github_urls"
+    echo ""
+    found_links=true
+  fi
+
+   # Search for Gerrit URLs (nugerrit.ntnxdpro.com)
+  local gerrit_urls
+  gerrit_urls=$(printf '%s' "$all_text" | grep -oiE 'https?://nugerrit\.ntnxdpro\.com/[a-zA-Z0-9/_@.~+:=,-]*' 2>/dev/null | sort -u)
+
+  if [ -n "$gerrit_urls" ]; then
+    echo "Gerrit Review Links:"
+    echo "--------------------"
+    while IFS= read -r url; do
+      [ -n "$url" ] && echo "  $url"
+    done <<< "$gerrit_urls"
+    echo ""
+    found_links=true
+  fi
+
+  if [ "$found_links" = false ]; then
+    echo "No GitHub or Gerrit review links found in ticket description or comments."
+  fi
+
+  echo "================================================================================"
 }
 
 alias show_ticket='describe_ticket'
@@ -1065,16 +1316,16 @@ EOF
    echo "Full Payload Preview:"
    jq -n \
      --arg project "$PROJECT_KEY" \
-     --arg reporter "$REPORTER" \
-     --arg summary "$SUMMARY" \
-     --arg description "$DESCRIPTION" \
-     --arg priority_id "$PRIORITY_ID" \
-     --arg assignee "$ASSIGNEE" \
-       --argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
-       --arg issue_type "$ISSUE_TYPE_NAME" \
-      --argjson extra_fields "$EXTRA_FIELDS_JSON" \
-      --arg epic_field "$EPIC_LINK_FIELD_ID" \
-      --arg epic_key "$SELECTED_EPIC_KEY" '
+      --arg reporter "$CURRENT_USER" \
+      --arg summary "$SUMMARY" \
+      --arg description "$DESCRIPTION" \
+      --arg priority_id "$PRIORITY_ID" \
+      --arg assignee "$ASSIGNEE" \
+        --argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
+        --arg issue_type "$ISSUE_TYPE_NAME" \
+       --argjson extra_fields "$EXTRA_FIELDS_JSON" \
+       --arg epic_field "$EPIC_LINK_FIELD_ID" \
+       --arg epic_key "$SELECTED_EPIC_KEY" '
       {
         fields: {
           project: { key: $project },
@@ -1159,16 +1410,24 @@ update_ticket() {
   _jira_validate_env || return 1
   emulate -L zsh
 
-  if [ "$#" -ne 1 ]; then
+  if [ "$#" -eq 0 ]; then
+    echo -n "Ticket Key > "
+    read -r ISSUE_INPUT
+    if [ -z "$ISSUE_INPUT" ]; then
+      echo "Error: Ticket key is required."
+      return 1
+    fi
+  elif [ "$#" -ne 1 ]; then
     echo "Usage: update_ticket <TICKET_KEY>"
     echo "Examples:"
     echo "  update_ticket clstr-15888"
     echo "  update_ticket ENG-1234"
     return 1
+  else
+    ISSUE_INPUT="$1"
   fi
 
-  local ISSUE_INPUT
-  ISSUE_INPUT=$(printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:lower:]' '[:upper:]')
+  ISSUE_INPUT=$(printf '%s' "$ISSUE_INPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:lower:]' '[:upper:]')
   if [[ ! "$ISSUE_INPUT" =~ '^[A-Z][A-Z0-9_]*-[0-9]+$' ]]; then
     echo "Error: Ticket key must match a Jira issue key such as PROJECT-1234."
     return 1
