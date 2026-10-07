@@ -4,3 +4,4 @@ config/herdr/herdr-server.log
 config/herdr/session.json
 zsh/local/*
 AGENTS.md
+.DS_Store*

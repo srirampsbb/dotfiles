@@ -10,7 +10,7 @@ for file in "$HOME/.dotfiles/zsh"/*.zsh; do
   [[ -r "$file" ]] && source "$file"
 done
 
-# Load local overrides (*ntnx*.zsh)
+# Load local overrides
 if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
   for file in "$HOME/.dotfiles/zsh/local"/*.zsh; do
     [[ -r "$file" ]] && source "$file"
@@ -19,12 +19,12 @@ fi
 
 # cargo
 if [[ -f "$HOME/.cargo/env" ]]; then
- source "$HOME/.cargo/env"
+  source "$HOME/.cargo/env"
 fi
 
 # Completion Styles
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' # Case-insensitive
-zstyle ':completion:*' menu select                      # Interactive menu
+zstyle ':completion:*' menu select                        # Interactive menu
 
 # Directory Colors
 if [[ -f "$HOME/.dircolors" ]]; then
@@ -91,7 +91,8 @@ if [[ -z "$_ZSH_PLUGINS_LOADED" ]]; then
   _load_plugin() {
     for file in "$@"; do
       if [[ -f "$file" ]]; then
-        source "$file"; return 0
+        source "$file"
+        return 0
       fi
     done
   }
