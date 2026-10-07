@@ -50,6 +50,8 @@ brew "shfmt"
 brew "stylua"
 # TOML toolkit written in Rust
 brew "taplo"
+# Parser generator tool
+brew "tree-sitter-cli"
 # Extremely fast Python package installer and resolver, written in Rust
 brew "uv"
 # Blazing fast terminal file manager written in Rust, based on async I/O
@@ -57,4 +59,3 @@ brew "yazi"
 cask "font-hack-nerd-font"
 # GPU-accelerated cross-platform terminal emulator and multiplexer
 cask "wezterm"
-npm "tree-sitter-cli"
