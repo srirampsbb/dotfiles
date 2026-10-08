@@ -7,19 +7,19 @@ typeset -U path PATH fpath FPATH
 # ==============================================================================
 # Load general personal zsh files
 for file in "$HOME/.dotfiles/zsh"/*.zsh; do
-  [[ -r "$file" ]] && source "$file"
+	[[ -r "$file" ]] && source "$file"
 done
 
 # Load local overrides
 if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
-  for file in "$HOME/.dotfiles/zsh/local"/*.zsh; do
-    [[ -r "$file" ]] && source "$file"
-  done
+	for file in "$HOME/.dotfiles/zsh/local"/*.zsh; do
+		[[ -r "$file" ]] && source "$file"
+	done
 fi
 
 # cargo
 if [[ -f "$HOME/.cargo/env" ]]; then
-  source "$HOME/.cargo/env"
+	source "$HOME/.cargo/env"
 fi
 
 # Completion Styles
@@ -28,12 +28,12 @@ zstyle ':completion:*' menu select                        # Interactive menu
 
 # Directory Colors
 if [[ -f "$HOME/.dircolors" ]]; then
-  eval "$(gdircolors -b "$HOME/.dircolors")"
+	eval "$(gdircolors -b "$HOME/.dircolors")"
 fi
 
 # Force vertical bar cursor on prompt reset (\e[5 q = blinking bar, \e[6 q = steady bar)
 _force_line_cursor() {
-  echo -ne '\e[6 q'
+	echo -ne '\e[6 q'
 }
 
 precmd_functions+=(_force_line_cursor)
@@ -50,67 +50,67 @@ export VISUAL="nvim"
 
 # 1. Fast, Subshell-Free Homebrew Initialization
 if [[ -d "/opt/homebrew" ]]; then
-  HOMEBREW_PREFIX="/opt/homebrew"
+	HOMEBREW_PREFIX="/opt/homebrew"
 elif [[ -d "/usr/local/Homebrew" || -d "/usr/local/Cellar" ]]; then
-  HOMEBREW_PREFIX="/usr/local"
+	HOMEBREW_PREFIX="/usr/local"
 elif [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
-  HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew"
+	HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew"
 fi
 
 if [[ -n "$HOMEBREW_PREFIX" ]]; then
-  export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
-  export MANPATH="$HOMEBREW_PREFIX/share/man:${MANPATH:-}"
-  export INFOPATH="$HOMEBREW_PREFIX/share/info:${INFOPATH:-}"
+	export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+	export MANPATH="$HOMEBREW_PREFIX/share/man:${MANPATH:-}"
+	export INFOPATH="$HOMEBREW_PREFIX/share/info:${INFOPATH:-}"
 fi
 
 # 2. Populate FPATH for Completions
 for dir in \
-  "$HOME/.zsh/plugins/zsh-completions/src" \
-  ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-completions"} \
-  "/usr/share/zsh/site-functions" \
-  "/usr/share/zsh/vendor-completions"; do
-  [[ -d "$dir" ]] && FPATH="$dir:$FPATH"
+	"$HOME/.zsh/plugins/zsh-completions/src" \
+	${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-completions"} \
+	"/usr/share/zsh/site-functions" \
+	"/usr/share/zsh/vendor-completions"; do
+	[[ -d "$dir" ]] && FPATH="$dir:$FPATH"
 done
 
 # Run compinit once per session with -C (skip security audit, use cached dump).
 # To force a full rebuild after installing new completions: rm ~/.zcompdump && exec zsh
 if [[ -z "$_ZSHRC_COMPINIT_DONE" ]]; then
-  autoload -Uz compinit
-  compinit -C
-  _ZSHRC_COMPINIT_DONE=1
+	autoload -Uz compinit
+	compinit -C
+	_ZSHRC_COMPINIT_DONE=1
 fi
 
 # 3. FZF Integration (AFTER compinit) — guard avoids 5ms fork on reload
 if [[ -z "$_FZF_ZSH_LOADED" ]] && command -v fzf &>/dev/null; then
-  source <(fzf --zsh)
-  _FZF_ZSH_LOADED=1
+	source <(fzf --zsh)
+	_FZF_ZSH_LOADED=1
 fi
 
 # Plugins: load once only — re-sourcing stacks widget wrappers (O(n²) slowdown)
 if [[ -z "$_ZSH_PLUGINS_LOADED" ]]; then
-  _load_plugin() {
-    for file in "$@"; do
-      if [[ -f "$file" ]]; then
-        source "$file"
-        return 0
-      fi
-    done
-  }
+	_load_plugin() {
+		for file in "$@"; do
+			if [[ -f "$file" ]]; then
+				source "$file"
+				return 0
+			fi
+		done
+	}
 
-  # Autosuggestions
-  _load_plugin \
-    "$HOME/.zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
-    "/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh" \
-    "/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
-    ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"}
+	# Autosuggestions
+	_load_plugin \
+		"$HOME/.zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+		"/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+		"/usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+		${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"}
 
-  # Syntax Highlighting (must load LAST)
-  _load_plugin \
-    "/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
-    "$HOME/.zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
-    "/usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
-    ${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"}
+	# Syntax Highlighting (must load LAST)
+	_load_plugin \
+		"/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+		"$HOME/.zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+		"/usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+		${HOMEBREW_PREFIX:+"$HOMEBREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"}
 
-  unfunction _load_plugin
-  _ZSH_PLUGINS_LOADED=1
+	unfunction _load_plugin
+	_ZSH_PLUGINS_LOADED=1
 fi
