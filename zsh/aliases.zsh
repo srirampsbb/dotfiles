@@ -41,7 +41,7 @@ alias hrc='nvim ~/.config/herdr/config.toml'
 alias vim="nvim"
 alias vi="nvim"
 alias nv="nvim"
-alias nvc="nvim /Users/sriram.ravichandran/.dotfiles/config/nvim/init.lua"
+alias nvc="nvim ~/.dotfiles/config/nvim/init.lua"
 
 # ==============================================================================
 # Git Aliases
