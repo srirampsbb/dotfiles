@@ -109,3 +109,7 @@ if [[ -z "$_ZSH_PLUGINS_LOADED" ]]; then
 	unfunction _load_plugin
 	_ZSH_PLUGINS_LOADED=1
 fi
+
+# cargo
+export PATH="$HOME/.cargo/bin":$PATH:
+eval "$(zoxide init zsh)"
