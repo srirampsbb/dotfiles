@@ -110,6 +110,9 @@ if [[ -z "$_ZSH_PLUGINS_LOADED" ]]; then
 	_ZSH_PLUGINS_LOADED=1
 fi
 
-# cargo
-export PATH="$HOME/.cargo/bin":$PATH:
+# User tool dirs — prepended so they win over Homebrew/system.
+# Each prepend goes to the front; the last one ends up first.
+# Final order: mason -> cargo -> brew -> system.
+[[ -d "$HOME/.cargo/bin" ]] && export PATH="$HOME/.cargo/bin:$PATH"
+[[ -d "$HOME/.local/share/nvim/mason/bin" ]] && export PATH="$HOME/.local/share/nvim/mason/bin:$PATH"
 eval "$(zoxide init zsh)"
