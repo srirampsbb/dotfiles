@@ -10,16 +10,11 @@ for file in "$HOME/.dotfiles/zsh"/*.zsh; do
 	[[ -r "$file" ]] && source "$file"
 done
 
-# Load local overrides
+# Load local overrides (*.zsh)
 if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
 	for file in "$HOME/.dotfiles/zsh/local"/*.zsh; do
 		[[ -r "$file" ]] && source "$file"
 	done
-fi
-
-# cargo
-if [[ -f "$HOME/.cargo/env" ]]; then
-	source "$HOME/.cargo/env"
 fi
 
 # Completion Styles

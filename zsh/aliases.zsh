@@ -17,18 +17,8 @@ alias uuuu='cd ../../../../'
 alias uuuuu='cd ../../../../../'
 
 # Listing Options (GNU gls)
-# Use gls on macOS (Coreutils) if present, otherwise fallback to standard ls
-if type gls &>/dev/null; then
-	alias ls="gls --color=auto"
-	alias ll="gls -l --color=auto"
-	alias la="gls -A --color=auto"
-	alias l="gls -lrt --color=auto"
-else
-	alias ls="ls --color=auto"
-	alias ll="ls -l --color=auto"
-	alias la="ls -A --color=auto"
-	alias l="ls -lrt --color=auto"
-fi
+alias ll="eza -l"
+alias l="eza"
 
 # herdr
 alias tm='herdr'
