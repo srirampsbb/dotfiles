@@ -157,3 +157,11 @@ if command -v go >/dev/null 2>&1; then
 fi
 
 eval "$(zoxide init zsh)"
+
+# ==============================================================================
+# ZSH LINE EDITOR KEYMAP
+# ==============================================================================
+# zsh auto-selects the vi keymaps when $EDITOR/$VISUAL contains "vi" (ours is
+# "nvim"), which leaves Ctrl+A/Ctrl+E as self-insert instead of beginning/end of
+# line. Explicitly select emacs mode; this also overrides EDITOR auto-detection.
+bindkey -e

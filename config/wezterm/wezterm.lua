@@ -29,8 +29,11 @@ config.color_scheme = "Tokyo Night"
 config.send_composed_key_when_left_alt_is_pressed = false
 config.send_composed_key_when_right_alt_is_pressed = false
 
--- REQUIRED FOR macOS: Enable progressive key reporting for Ctrl + Arrows
-config.enable_csi_u_key_encoding = true
+-- Let apps (e.g. herdr) request the Kitty keyboard protocol so WezTerm can
+-- forward Super/Cmd and disambiguated Ctrl/Alt chords.
+-- Do NOT use enable_csi_u_key_encoding = true here; it rewrites modified keys
+-- unconditionally and breaks apps that can't opt out.
+config.enable_kitty_keyboard = true
 
 -- Disable confirmation prompt when closing a window
 config.window_close_confirmation = "NeverPrompt"
@@ -39,29 +42,47 @@ config.window_close_confirmation = "NeverPrompt"
 config.quit_when_all_windows_are_closed = false
 
 -- Native macOS Shortcuts & Text Navigation
+-- NB: these consume Option/Cmd+Arrows before herdr ever sees them, so don't
+-- bind herdr actions to those chords (herdr pane nav is prefix+h/j/k/l).
 config.keys = {
-	-- Word Jumping (Option + Left/Right Arrow)
+	-- Use SendString (raw bytes) rather than SendKey: the shell wants these
+	-- exact legacy sequences (ESC b, ESC f, ESC DEL, 0x01, 0x05) and
+	-- SendString emits them directly, without keyboard-protocol re-encoding.
+	-- Word Jumping (Option + Left/Right Arrow / Backspace)
 	{
 		key = "LeftArrow",
 		mods = "OPT",
-		action = wezterm.action.SendKey({ key = "b", mods = "ALT" }),
+		action = wezterm.action.SendString("\x1bb"),
 	},
 	{
 		key = "RightArrow",
 		mods = "OPT",
-		action = wezterm.action.SendKey({ key = "f", mods = "ALT" }),
+		action = wezterm.action.SendString("\x1bf"),
+	},
+	{
+		key = "Backspace",
+		mods = "OPT",
+		action = wezterm.action.SendString("\x1b\x7f"),
 	},
 
 	-- Line Jump Start/End (Cmd + Left/Right Arrow)
 	{
 		key = "LeftArrow",
 		mods = "CMD",
-		action = wezterm.action.SendKey({ key = "a", mods = "CTRL" }),
+		action = wezterm.action.SendString("\x01"),
 	},
 	{
 		key = "RightArrow",
 		mods = "CMD",
-		action = wezterm.action.SendKey({ key = "e", mods = "CTRL" }),
+		action = wezterm.action.SendString("\x05"),
+	},
+	-- Delete to start of line (Cmd + Backspace)
+	-- No WezTerm default exists for this; make it explicit so it survives the
+	-- Kitty keyboard negotiation inside herdr instead of degrading to one char.
+	{
+		key = "Backspace",
+		mods = "CMD",
+		action = wezterm.action.SendString("\x15"), -- Ctrl+U: zsh emacs kill-whole-line
 	},
 	-- Cmd + Shift + L opens the Launcher Menu (shows SSH: ubvm, local shell, etc.)
 	{
