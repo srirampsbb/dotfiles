@@ -73,6 +73,38 @@ Keeps real `~/.config` dirs so runtime state (sockets/logs/caches, `service.json
 
 ---
 
+## Python version
+
+`zsh/zshrc` pins which Homebrew Python `python`, `python3`, `pip`, and `pip3`
+resolve to, through a single variable:
+
+```zsh
+HOMEBREW_PYTHON_VERSION=3.14
+```
+
+Homebrew's versioned Python is keg-only: it links only `python3.14` into
+`$HOMEBREW_PREFIX/bin`, while the unversioned `python`/`python3`/`pip`/`pip3`
+symlinks live in `$HOMEBREW_PREFIX/opt/python@<version>/libexec/bin`. The `zshrc`
+prepends that directory to `PATH`, so both names point at the pinned version and
+take precedence over `/usr/bin/python3`.
+
+The variable is the single source of truth for the shell, but the version also
+appears in the `Brewfile` formula name — keep the two in sync:
+
+| Place       | Value                          |
+| ----------- | ------------------------------ |
+| `zsh/zshrc` | `HOMEBREW_PYTHON_VERSION=3.14` |
+| `Brewfile`  | `brew "python@3.14"`           |
+
+To upgrade (e.g. to 3.15):
+
+1. Set `HOMEBREW_PYTHON_VERSION=3.15` in `zsh/zshrc`.
+2. Change the `Brewfile` line to `brew "python@3.15"`.
+3. Install it — `brew install python@3.15` or re-run `./bootstrap.sh`.
+4. `exec zsh` (or open a new terminal) to pick up the new `PATH`.
+
+---
+
 ## Directory layout
 
 ```

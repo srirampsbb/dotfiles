@@ -82,6 +82,12 @@ fi
 
 if [[ -n "$HOMEBREW_PREFIX" ]]; then
   export PATH="$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:$PATH"
+  # Homebrew Python version exposed as python/python3/pip/pip3 via libexec/bin.
+  # Single source of truth for the shell; keep in sync with the Brewfile.
+  HOMEBREW_PYTHON_VERSION=3.14
+  if [[ -d "$HOMEBREW_PREFIX/opt/python@${HOMEBREW_PYTHON_VERSION}/libexec/bin" ]]; then
+    export PATH="$HOMEBREW_PREFIX/opt/python@${HOMEBREW_PYTHON_VERSION}/libexec/bin:$PATH"
+  fi
   export MANPATH="$HOMEBREW_PREFIX/share/man:${MANPATH:-}"
   export INFOPATH="$HOMEBREW_PREFIX/share/info:${INFOPATH:-}"
 fi

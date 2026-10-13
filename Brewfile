@@ -12,13 +12,14 @@ brew "gh"                      # GitHub CLI (octo.nvim)
 brew "eza"                     # ls replacement (ll/l aliases)
 brew "bat"                     # cat replacement
 brew "yazi"                    # terminal file manager
+brew "sevenzip"                # 7-Zip archiver (7z)
 brew "git"
 brew "zsh-autosuggestions"     # zsh plugin (sourced from brew share)
 brew "zsh-syntax-highlighting" # zsh plugin (sourced from brew share)
 brew "zsh-completions"         # zsh completion functions (FPATH)
 
 # --- Languages & runtimes -----------------------------------------------------
-brew "python@3.14"
+brew "python@3.14"             # keep in sync with HOMEBREW_PYTHON_VERSION (zsh/zshrc)
 brew "node"
 brew "go"
 brew "rust"                    # provides cargo for `cargo install` tools
@@ -31,6 +32,7 @@ brew "tree-sitter-cli"
 brew "shfmt"                   # shell formatting (code-checker)
 brew "prettier"               # json/yaml/md formatting (nvim + code-checker)
 brew "stylua"                  # lua formatting (nvim + code-checker)
+brew "tombi"                   # toml formatting + linting (code-checker)
 brew "ruff"                    # python lint/format (nvim)
 brew "goimports"               # go formatting (nvim)
 brew "golangci-lint"           # go linting (code-checker)

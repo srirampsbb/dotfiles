@@ -15,145 +15,170 @@
 #
 # With no arguments, staged, unstaged, and untracked files are checked.
 
-# zsh does not word-split unquoted variables by default; enable it so the
-# per-language file lists below expand into separate arguments.
-setopt shwordsplit
-
 # Parse arguments: an optional --all flag and/or an explicit list of files.
-CHECK_ALL=0
+integer CHECK_ALL=0
 typeset -a INPUT_FILES
 for arg in "$@"; do
-	case "$arg" in
-	--all) CHECK_ALL=1 ;;
-	*) INPUT_FILES+=("${arg:A}") ;;
-	esac
+	if [[ "$arg" == "--all" ]]; then
+		CHECK_ALL=1
+	else
+		INPUT_FILES+=("${arg:A}")
+	fi
 done
 
 # Work from the repository root so git output and the file lists line up.
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$REPO_ROOT" ]; then
-	echo "!! ERROR: not inside a git repository."
+if [[ -z "$REPO_ROOT" ]]; then
+	print "!! ERROR: not inside a git repository."
 	exit 1
 fi
 cd "$REPO_ROOT" || exit 1
 
-# Pass through only regular files that exist on disk, one per line.
+# Print the given paths that are regular files, NUL-separated so names with
+# spaces or other unusual characters survive intact.
 filter_existing() {
-	while IFS= read -r f; do
-		[ -n "$f" ] && [ -f "$f" ] && print -r -- "$f"
+	local f
+	for f in "$@"; do
+		[[ -f "$f" ]] && printf '%s\0' "$f"
 	done
 }
 
-if [ "$CHECK_ALL" -eq 1 ]; then
+# Collect candidate files into an array, one NUL-delimited entry per path.
+typeset -a CHANGED_FILES
+if ((CHECK_ALL)); then
 	# Every file tracked by git.
-	CHANGED_FILES=$(git ls-files | filter_existing)
-elif [ ${#INPUT_FILES[@]} -gt 0 ]; then
-	# Explicit file list (resolved to absolute paths above).
-	CHANGED_FILES=$(print -rl -- "${INPUT_FILES[@]}" | filter_existing)
+	CHANGED_FILES=(${(0)"$(git ls-files -z)"})
+elif ((${#INPUT_FILES[@]})); then
+	# Explicit file list (already resolved to absolute paths above).
+	CHANGED_FILES=("${INPUT_FILES[@]}")
 else
-	# Get staged, unstaged, and untracked files (excluding deleted files).
-	# -uall lists each untracked file individually instead of collapsing
-	# untracked directories into a single entry, so nested new files are checked.
-	CHANGED_FILES=$(git status --porcelain -uall | awk '$1 !~ /^D/ {print $2}' | filter_existing)
+	# Staged, unstaged, and untracked files. -z emits NUL-delimited paths so
+	# names containing spaces or quotes stay intact, --diff-filter=d drops
+	# deletions, and --exclude-standard honours .gitignore for untracked files.
+	# (u) dedupes paths that are both staged and further modified.
+	CHANGED_FILES=(${(0u)"$(
+		git diff --name-only -z --diff-filter=d
+		git diff --name-only -z --cached --diff-filter=d
+		git ls-files --others --exclude-standard -z
+	)"})
 fi
+CHANGED_FILES=(${(0)"$(filter_existing "${CHANGED_FILES[@]}")"})
 
-if [ -z "$CHANGED_FILES" ]; then
-	echo "No files to check."
+if ((${#CHANGED_FILES[@]} == 0)); then
+	print "No files to check."
 	exit 0
 fi
 
-echo "Checking files:"
-echo "$CHANGED_FILES"
-echo "----------------------------------------"
+print "Checking files:"
+print -l -- "${CHANGED_FILES[@]}"
+print "----------------------------------------"
 
-PYTHON_FILES=$(echo "$CHANGED_FILES" | grep -E '\.py$' || true)
-GO_FILES=$(echo "$CHANGED_FILES" | grep -E '\.go$' || true)
-SH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.sh$' || true)
-ZSH_FILES=$(echo "$CHANGED_FILES" | grep -E '\.zsh$' || true)
-LUA_FILES=$(echo "$CHANGED_FILES" | grep -E '\.lua$' || true)
-JSON_FILES=$(echo "$CHANGED_FILES" | grep -E '\.jsonc?$' || true)
-YAML_FILES=$(echo "$CHANGED_FILES" | grep -E '\.ya?ml$' || true)
-MD_FILES=$(echo "$CHANGED_FILES" | grep -E '\.mdx?$' || true)
+# Split the changed files into per-language arrays. `${(M)array:#pattern}` keeps
+# the elements matching the glob and drops the rest, so no word splitting is
+# needed.
+typeset -a PYTHON_FILES GO_FILES SH_FILES ZSH_FILES LUA_FILES TOML_FILES JSON_FILES YAML_FILES MD_FILES
+PYTHON_FILES=(${(M)CHANGED_FILES:#*.py})
+GO_FILES=(${(M)CHANGED_FILES:#*.go})
+SH_FILES=(${(M)CHANGED_FILES:#*.sh})
+ZSH_FILES=(${(M)CHANGED_FILES:#*.zsh})
+LUA_FILES=(${(M)CHANGED_FILES:#*.lua})
+TOML_FILES=(${(M)CHANGED_FILES:#*.toml})
+JSON_FILES=(${(M)CHANGED_FILES:#*.(json|jsonc)})
+YAML_FILES=(${(M)CHANGED_FILES:#*.(yml|yaml)})
+MD_FILES=(${(M)CHANGED_FILES:#*.(md|mdx)})
 
 # Tracks executables that were required but not found in PATH.
-MISSING_TOOLS=""
+typeset -a MISSING_TOOLS
 
 # Verify an executable exists before invoking it. On failure, log an explicit
 # error, record the tool, and return non-zero so the caller can skip it.
 require_tool() {
-	tool="$1"
-	purpose="$2"
-	if command -v "$tool" >/dev/null 2>&1; then
+	local tool=$1 purpose=$2
+	if (($+commands[$tool])); then
 		return 0
 	fi
-	echo "!! ERROR: required tool '$tool' not found in PATH -- skipping $purpose."
-	MISSING_TOOLS="$MISSING_TOOLS $tool"
+	print "!! ERROR: required tool '$tool' not found in PATH -- skipping $purpose."
+	MISSING_TOOLS+=("$tool")
 	return 1
 }
 
 # Python Checks (Auto-fix basic issues, report remaining)
-if [ -n "$PYTHON_FILES" ]; then
-	echo "==> Python Checks"
+if ((${#PYTHON_FILES[@]})); then
+	print "==> Python Checks"
 	if require_tool uvx "ruff formatting and linting via uvx"; then
-		uvx ruff format $PYTHON_FILES
-		uvx ruff check --fix --show-fixes $PYTHON_FILES || true
+		uvx ruff format "${PYTHON_FILES[@]}"
+		uvx ruff check --fix --show-fixes "${PYTHON_FILES[@]}" || true
 	fi
 	if require_tool basedpyright "Python type checking"; then
-		basedpyright $PYTHON_FILES || true
+		basedpyright "${PYTHON_FILES[@]}" || true
 	fi
 fi
 
 # Go Checks
-if [ -n "$GO_FILES" ]; then
-	echo "==> Go Checks"
+if ((${#GO_FILES[@]})); then
+	print "==> Go Checks"
 	if require_tool gofmt "Go formatting"; then
-		gofmt -w $GO_FILES
+		gofmt -w "${GO_FILES[@]}"
 	fi
 	if require_tool golangci-lint "Go linting"; then
-		golangci-lint run --fix $GO_FILES || true
+		golangci-lint run --fix "${GO_FILES[@]}" || true
 	fi
 fi
 
 # Shell Checks (sh/bash) -- formatted with shfmt.
-if [ -n "$SH_FILES" ]; then
-	echo "==> Shell Checks"
+if ((${#SH_FILES[@]})); then
+	print "==> Shell Checks"
 	if require_tool shfmt "sh/bash formatting"; then
-		shfmt -ln=bash -w $SH_FILES || true
+		shfmt -ln=bash -w "${SH_FILES[@]}" || true
 	fi
 fi
 
 # Zsh Checks -- use shfmt (format) + zsh -n (syntax).
-if [ -n "$ZSH_FILES" ]; then
-	echo "==> Zsh Checks"
+if ((${#ZSH_FILES[@]})); then
+	print "==> Zsh Checks"
 	if require_tool shfmt "zsh formatting"; then
-		shfmt -ln=zsh -w $ZSH_FILES || true
+		shfmt -ln=zsh -w "${ZSH_FILES[@]}" || true
 	fi
 	# zsh -n only checks its first argument, so loop per file.
-	for zf in $ZSH_FILES; do
+	for zf in "${ZSH_FILES[@]}"; do
 		zsh -n "$zf" || true
 	done
 fi
 
 # Lua Checks -- format with stylua, then lint with lua-language-server.
-if [ -n "$LUA_FILES" ]; then
-	echo "==> Lua Checks"
+if ((${#LUA_FILES[@]})); then
+	print "==> Lua Checks"
 	if require_tool stylua "Lua formatting"; then
-		stylua $LUA_FILES || true
+		stylua "${LUA_FILES[@]}" || true
 	fi
 	if require_tool lua-language-server "Lua checks"; then
-		lua-language-server --check $LUA_FILES --checklevel=Warning || true
+		lua-language-server --check "${LUA_FILES[@]}" --checklevel=Warning || true
+	fi
+fi
+
+# TOML Checks -- format and lint with tombi.
+if ((${#TOML_FILES[@]})); then
+	print "==> TOML Checks"
+	if require_tool tombi "TOML formatting and linting"; then
+		tombi format "${TOML_FILES[@]}" || true
+		tombi lint --quiet "${TOML_FILES[@]}" || true
 	fi
 fi
 
 # Prettier Checks -- format JSON, YAML, and Markdown files.
-if [ -n "$JSON_FILES$YAML_FILES$MD_FILES" ]; then
-	echo "==> Prettier Checks"
+typeset -a PRETTIER_FILES
+PRETTIER_FILES=("${JSON_FILES[@]}" "${YAML_FILES[@]}" "${MD_FILES[@]}")
+if ((${#PRETTIER_FILES[@]})); then
+	print "==> Prettier Checks"
 	if require_tool prettier "JSON/YAML/Markdown formatting"; then
-		prettier --write $JSON_FILES $YAML_FILES $MD_FILES || true
+		prettier --write "${PRETTIER_FILES[@]}" || true
 	fi
 fi
 
-if [ -n "$MISSING_TOOLS" ]; then
-	echo "----------------------------------------"
-	echo "!! MISSING TOOLS: the following executables were not found and their checks were skipped:$MISSING_TOOLS"
+print "----------------------------------------"
+if ((${#MISSING_TOOLS[@]})); then
+	print "!! MISSING TOOLS: the following executables were not found and their checks were skipped: ${(j: :)MISSING_TOOLS}"
+	print "Done checking ${#CHANGED_FILES[@]} file(s); some checks were skipped."
+else
+	print "Done: all checks completed on ${#CHANGED_FILES[@]} file(s)."
 fi

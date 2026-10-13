@@ -64,10 +64,10 @@ panel_bg = "reset"
 prefix = "ctrl+b"
 
 # Preserves default prefix keys while adding prefix-free Ctrl+Arrow shortcuts
-focus_pane_left  = ["prefix+h", "prefix+left"]
+focus_pane_left = ["prefix+h", "prefix+left"]
 focus_pane_right = ["prefix+l", "prefix+right"]
-focus_pane_up    = ["prefix+k", "prefix+up"]
-focus_pane_down  = ["prefix+j", "prefix+down"]
+focus_pane_up = ["prefix+k", "prefix+up"]
+focus_pane_down = ["prefix+j", "prefix+down"]
 
 # Prefix-mode actions
 # help = "prefix+?"
@@ -143,10 +143,7 @@ rename_tab = "prefix+period"
 
 [ui]
 # Custom shell command rendered on the right side of the tab bar
-tab_bar_right = [
-  { type = "hostname" },
-  { type = "datetime", format = "%m/%d %H:%M:%S" }
-]
+tab_bar_right = [{ type = "hostname" }, { type = "datetime", format = "%m/%d %H:%M:%S" }]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
 # sidebar_width = 26
 
@@ -160,7 +157,7 @@ tab_bar_right = [
 sidebar_start_collapsed = true
 
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
- sidebar_collapsed_mode = "hidden"
+sidebar_collapsed_mode = "hidden"
 
 # Terminal width at or below which Herdr uses the mobile single-column layout.
 # Increase this for foldables, tablets, or wide phone terminals.
@@ -217,7 +214,7 @@ prompt_new_tab_name = false
 
 # Hide the tab row when a workspace has exactly one tab.
 # New tabs can still be created with the configured keybinding.
-hide_tab_bar_when_single_tab = true
+hide_tab_bar_when_single_tab = false
 
 # Desktop tab row placement: "top" or "bottom".
 # tab_bar_position = "top"
