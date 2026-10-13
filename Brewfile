@@ -39,9 +39,8 @@ brew "golangci-lint"           # go linting (code-checker)
 brew "lua-language-server"     # lua checks (code-checker)
 
 # --- Agent tools --------------------------------------------------------------
-brew "herdr"
-brew "opencode"
+brew "herdr"                   # core formula with native Linux bottles too
 
 # --- Casks --------------------------------------------------------------------
-cask "wezterm"
-cask "font-hack-nerd-font"
+cask "wezterm" if OS.mac?              # macOS-only GUI app
+cask "font-hack-nerd-font"             # font cask: macOS + Linux (~/.local/share/fonts)
