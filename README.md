@@ -56,6 +56,8 @@ Keeps real `~/.config` dirs so runtime state (sockets/logs/caches, `service.json
 | Target              | Source                                    |
 | ------------------- | ----------------------------------------- |
 | `~/.zshrc`          | `zsh/zshrc`                               |
+| `~/.bashrc`         | `bash/bashrc` (prompt + PATH only)        |
+| `~/.bash_profile`   | `bash/bash_profile` (symlinked, or appended if present) |
 | `~/.config/nvim`    | `config/nvim` (submodule)                 |
 | `~/.config/wezterm` | `config/wezterm` (linked only if present) |
 
@@ -112,6 +114,9 @@ To upgrade (e.g. to 3.15):
 ├── Brewfile
 ├── bootstrap.sh
 ├── packages.md
+├── bash/
+│   ├── bashrc
+│   └── bash_profile
 ├── config/
 │   ├── herdr/config.toml
 │   ├── nvim/          # git submodule

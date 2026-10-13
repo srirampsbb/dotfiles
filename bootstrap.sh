@@ -207,6 +207,30 @@ log "Creating symlinks"
 
 # Whole-entry links (no runtime state in their config dir)
 link "$HOME/.zshrc" "$REPO/zsh/zshrc"
+link "$HOME/.bashrc" "$REPO/bash/bashrc"
+
+# ~/.bash_profile: distros differ (RHEL/Fedora/Rocky ship one; Debian/Ubuntu
+# don't). If one already exists, augment it in place so its content is kept;
+# otherwise symlink our managed profile.
+bash_profile="$HOME/.bash_profile"
+bash_marker="# >>> dotfiles bashrc >>>"
+if [[ -L "$bash_profile" && "$(readlink "$bash_profile")" == "$REPO/bash/bash_profile" ]]; then
+	log "ok    $bash_profile"
+elif [[ -e "$bash_profile" || -L "$bash_profile" ]]; then
+	if grep -qF "$bash_marker" "$bash_profile" 2>/dev/null; then
+		log "ok    $bash_profile (dotfiles block present)"
+	else
+		{
+			printf '\n%s\n' "$bash_marker"
+			printf '%s\n' '[ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"'
+			printf '%s\n' "# <<< dotfiles bashrc <<<"
+		} >>"$bash_profile"
+		log "edit  $bash_profile (added dotfiles bashrc block)"
+	fi
+else
+	link "$bash_profile" "$REPO/bash/bash_profile"
+fi
+
 link "$CONFIG/nvim" "$REPO/config/nvim"
 # wezterm config only useful on macOS/GUI; link if present in repo (safe)
 if [[ -d "$REPO/config/wezterm" ]]; then

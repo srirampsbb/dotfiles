@@ -1,0 +1,16 @@
+# ------------------------------------------------------------------------------
+# bash_profile — bash login-shell bridge (symlinked to ~/.bash_profile)
+#
+# A bash login shell reads /etc/profile, then the first existing of
+# ~/.bash_profile, ~/.bash_login, ~/.profile. Naming this file ~/.bash_profile
+# gives it precedence on every distro (the RHEL/Fedora/Rocky skeleton ships a
+# ~/.bash_profile; the Debian/Ubuntu skeleton ships ~/.profile).
+#
+# This file does nothing except hand bash login shells off to ~/.bashrc, where
+# the bash-specific setup (prompt + PATH) lives. The BASH_VERSION guard keeps it
+# safe if it is ever sourced by a non-bash shell.
+# ------------------------------------------------------------------------------
+
+if [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then
+	. "$HOME/.bashrc"
+fi
