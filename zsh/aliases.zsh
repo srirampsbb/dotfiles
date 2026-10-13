@@ -19,7 +19,7 @@ alias uuuuu='cd ../../../../../'
 # Listing Options (GNU gls)
 alias ll="eza -l"
 alias l="eza"
-
+alias cat="bat"
 # herdr
 alias tm='herdr'
 alias tmn='herdr'
