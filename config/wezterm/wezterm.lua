@@ -65,6 +65,23 @@ config.keys = {
 		action = wezterm.action.SendString("\x1b\x7f"),
 	},
 
+	-- Page Up/Down (Fn + Up/Down)
+	-- On this Mac, Fn+Up/Down arrive as Alt+Up/Alt+Down, so we translate those
+	-- into the standard legacy PageUp/PageDown sequences (ESC [ 5 ~ / ESC [ 6 ~).
+	-- This makes Fn+Up/Down page in TUIs (opencode, vim, less, man, ...).
+	-- NB: because Fn and Option are indistinguishable at the byte level here,
+	-- Option+Up/Down are remapped too.
+	{
+		key = "UpArrow",
+		mods = "ALT",
+		action = wezterm.action.SendString("\x1b[5~"),
+	},
+	{
+		key = "DownArrow",
+		mods = "ALT",
+		action = wezterm.action.SendString("\x1b[6~"),
+	},
+
 	-- Line Jump Start/End (Cmd + Left/Right Arrow)
 	{
 		key = "LeftArrow",
