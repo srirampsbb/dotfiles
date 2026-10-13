@@ -1120,8 +1120,8 @@ EOF
 
 		if printf '%s' "$ISSUETYPE_CREATE_META_JSON" | jq -e '.projects[0].issuetypes' >/dev/null 2>&1; then
 			ISSUETYPE_FIELDS_JSON=$(printf '%s' "$ISSUETYPE_CREATE_META_JSON" | jq -c \
-	--arg issue_type_id "$ISSUE_TYPE_ID" \
-	--arg issue_type_name "$ISSUE_TYPE_NAME" '
+				--arg issue_type_id "$ISSUE_TYPE_ID" \
+				--arg issue_type_name "$ISSUE_TYPE_NAME" '
         {values: (
           .projects[0].issuetypes[]?
           | select(
@@ -1357,16 +1357,16 @@ EOF
 
 	local PAYLOAD
 	PAYLOAD=$(jq -n \
-	--arg project "$PROJECT_KEY" \
-	--arg summary "$SUMMARY" \
-	--arg description "$DESCRIPTION" \
-	--arg priority_id "$PRIORITY_ID" \
-	--arg assignee "$ASSIGNEE" \
-	--argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
-	--arg issue_type "$ISSUE_TYPE_NAME" \
-	--argjson extra_fields "$EXTRA_FIELDS_JSON" \
-	--arg epic_field "$EPIC_LINK_FIELD_ID" \
-	--arg epic_key "$SELECTED_EPIC_KEY" '
+		--arg project "$PROJECT_KEY" \
+		--arg summary "$SUMMARY" \
+		--arg description "$DESCRIPTION" \
+		--arg priority_id "$PRIORITY_ID" \
+		--arg assignee "$ASSIGNEE" \
+		--argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
+		--arg issue_type "$ISSUE_TYPE_NAME" \
+		--argjson extra_fields "$EXTRA_FIELDS_JSON" \
+		--arg epic_field "$EPIC_LINK_FIELD_ID" \
+		--arg epic_key "$SELECTED_EPIC_KEY" '
       {
         fields: {
           project: { key: $project },

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "theme": {
+    "name": "system"
+  },
+  "keybinds": {
+    "session.page.up": "ctrl+u",
+    "session.page.down": "ctrl+d"
+  },
+  "cursor": {
+    "style": "line",
+    "blinking": true
+  },
+  "session": {
+    "sidebar": "hide"
+  }
+}
