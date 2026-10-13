@@ -1,3 +1,110 @@
 # dotfiles
 
-my dot files
+This repo provisions a fresh machine (macOS or Rocky Linux 8+) via [`bootstrap.sh`](./bootstrap.sh). It's safe to re-run.
+
+## Quick start
+
+```bash
+git clone git@github.com-personal:srirampsbb/dotfiles.git ~/.dotfiles
+cd ~/.dotfiles
+./bootstrap.sh
+```
+
+Override repo location: `DOTFILES=/path/to/repo ./bootstrap.sh`.
+
+---
+
+## What bootstrap.sh does
+
+### 1. Git submodules
+
+- `git submodule update --init --recursive`
+- Submodules: `config/nvim` → [`git@github.com-personal:srirampsbb/nvim-config.git`](https://github.com-personal/srirampsbb/nvim-config.git)
+
+### 2. OS packages
+
+**macOS (Darwin)**
+
+- Installs Homebrew if missing (non-interactive)
+- Sets up Homebrew env (`/opt/homebrew` or `/usr/local`)
+- Runs `brew bundle --file Brewfile`
+
+**Rocky Linux 8 / RHEL family (Linux)**
+
+- Installs base tools via `dnf` (git, zsh, curl/wget, util-linux-user)
+- Enables EPEL and CRB/Powertools
+- Installs CLI/editor tools via dnf (fzf, ripgrep, jq, fd-find→fd, neovim, tree-sitter, python3, nodejs/npm, go, build deps)
+- Tries bat/eza, gh, shfmt/stylua/prettier/golangci-lint/lua-language-server if available
+- Skips GUI casks (wezterm/Nerd Font); logs guidance
+- Notes optional tools (herdr/opencode/yazi) if not packaged
+
+See [packages.md](./packages.md) for the full list of packages.
+
+### 3. Language packages
+
+- **Rust/cargo**: if `cargo` missing, installs `rustup` (minimal profile) and sources env; then `cargo install shuck-cli zoxide`
+- **Go**: logs `$(go env GOPATH)/bin` (gopls handled by nvim/mason)
+- **npm**: no global packages by default
+- **uv**: installs `uv` via official script if missing; runs `uv tool install basedpyright`
+
+Creates `~/.local/bin` and `~/.cargo/bin` as needed.
+
+### 4. Symlinks (Option A)
+
+Keeps real `~/.config` dirs so runtime state (sockets/logs/caches, `service.json`) stays outside git.
+
+| Target              | Source                                    |
+| ------------------- | ----------------------------------------- |
+| `~/.zshrc`          | `zsh/zshrc`                               |
+| `~/.config/nvim`    | `config/nvim` (submodule)                 |
+| `~/.config/wezterm` | `config/wezterm` (linked only if present) |
+
+**opencode** (real dir; runtime preserved):
+
+- Moves `service.json` to real config if present; links `cli.json`, `tui.json`, `commands/`
+
+**herdr** (real dir):
+
+- Links only `config.toml`
+
+### 5. Misc
+
+- Sets login shell to zsh if needed; adds zsh to `/etc/shells` on Linux if missing
+
+---
+
+## Directory layout
+
+```
+.
+├── Brewfile
+├── bootstrap.sh
+├── packages.md
+├── config/
+│   ├── herdr/config.toml
+│   ├── nvim/          # git submodule
+│   ├── opencode/
+│   │   ├── cli.json
+│   │   ├── commands/
+│   │   │   ├── code-checker.md
+│   │   │   └── code-checker.zsh
+│   │   └── tui.json
+│   └── wezterm/wezterm.lua
+└── zsh/
+    ├── aliases.zsh
+    ├── git-functions.zsh
+    ├── jira-funcs.zsh
+    └── zshrc
+```
+
+## Package inventory
+
+See [packages.md](packages.md) for a complete table of system packages, language tools, Neovim plugins, Mason-managed tools, formatters, and Treesitter parsers.
+
+## Notes
+
+- Safe to re-run across macOS and Rocky/RHEL.
+- Some tools may come via cargo/npm/uv on Linux if dnf lacks them.
+- `cargo install` won't upgrade existing crates; re-runs are idempotent.
+- opencode `service.json` is runtime state and not symlinked.
+- `gopls` installed by nvim/mason.
