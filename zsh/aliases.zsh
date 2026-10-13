@@ -20,6 +20,7 @@ alias uuuuu='cd ../../../../../'
 alias ll="eza -l"
 alias l="eza"
 alias cat="bat"
+alias fe="yazi"
 # herdr
 alias tm='herdr'
 alias tmn='herdr'
