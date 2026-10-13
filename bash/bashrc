@@ -66,3 +66,11 @@ fi
 # bash equivalent of the zsh prompt:
 #   %F{248}%D{%m/%d} %F{244}%* %F{39}%~ %F{13}%# %f
 PS1='\[\e[38;5;248m\]\D{%m/%d} \[\e[38;5;244m\]\t \[\e[38;5;39m\]\w \[\e[38;5;13m\]\$ \[\e[0m\]'
+
+# ==============================================================================
+# ALIASES
+# ==============================================================================
+# Shell-agnostic aliases derived from zsh/aliases.zsh (see bash/aliases.sh).
+if [[ -f "$HOME/.dotfiles/bash/aliases.sh" ]]; then
+	. "$HOME/.dotfiles/bash/aliases.sh"
+fi

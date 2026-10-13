@@ -53,13 +53,13 @@ Creates `~/.local/bin` and `~/.cargo/bin` as needed.
 
 Keeps real `~/.config` dirs so runtime state (sockets/logs/caches, `service.json`) stays outside git.
 
-| Target              | Source                                    |
-| ------------------- | ----------------------------------------- |
-| `~/.zshrc`          | `zsh/zshrc`                               |
-| `~/.bashrc`         | `bash/bashrc` (prompt + PATH only)        |
+| Target              | Source                                                  |
+| ------------------- | ------------------------------------------------------- |
+| `~/.zshrc`          | `zsh/zshrc`                                             |
+| `~/.bashrc`         | `bash/bashrc` (prompt + PATH only)                      |
 | `~/.bash_profile`   | `bash/bash_profile` (symlinked, or appended if present) |
-| `~/.config/nvim`    | `config/nvim` (submodule)                 |
-| `~/.config/wezterm` | `config/wezterm` (linked only if present) |
+| `~/.config/nvim`    | `config/nvim` (submodule)                               |
+| `~/.config/wezterm` | `config/wezterm` (linked only if present)               |
 
 **opencode** (real dir; runtime preserved):
 
@@ -116,7 +116,8 @@ To upgrade (e.g. to 3.15):
 ├── packages.md
 ├── bash/
 │   ├── bashrc
-│   └── bash_profile
+│   ├── bash_profile
+│   └── aliases.sh
 ├── config/
 │   ├── herdr/config.toml
 │   ├── nvim/          # git submodule
