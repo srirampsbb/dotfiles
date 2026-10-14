@@ -71,7 +71,7 @@ Keeps real `~/.config` dirs so runtime state (sockets/logs/caches, `service.json
 
 ### 5. Misc
 
-- Sets login shell to zsh if needed; adds zsh to `/etc/shells` on Linux if missing
+- Installs zsh if needed but leaves the existing login shell unchanged
 
 ---
 

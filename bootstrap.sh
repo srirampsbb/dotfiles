@@ -80,7 +80,7 @@ elif [[ "$is_rocky_rhel" == true ]]; then
 		jq \
 		fd-find \
 		neovim \
-		tree-sitter \
+		libtree-sitter \
 		git \
 		python3 \
 		nodejs \
@@ -107,12 +107,6 @@ elif [[ "$is_rocky_rhel" == true ]]; then
 
 	# yazi: not always in EL8 repos; skip here (can be installed via cargo/binary later)
 	command -v yazi >/dev/null 2>&1 || log "yazi not found (optional; install via cargo or release if desired)"
-
-	# shfmt/stylua/prettier/golangci-lint/lua-language-server: try to install if available; else rely on cargo/npm/uv/go as appropriate
-	sudo dnf -y install shfmt golangci-lint 2>/dev/null || true
-	sudo dnf -y install stylua 2>/dev/null || true
-	sudo dnf -y install lua-language-server 2>/dev/null || true
-	sudo dnf -y install prettier 2>/dev/null || true
 
 	# Ensure fd binary name matches expectations (fd-find -> fd)
 	if command -v fd-find >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then
@@ -146,26 +140,36 @@ if ! command -v cargo >/dev/null 2>&1; then
 		source "$HOME/.cargo/env"
 	fi
 fi
-# Install cargo tools
+# Install cargo tools (compiles from source, may take 5–10 minutes)
 if command -v cargo >/dev/null 2>&1; then
-	log "cargo: shuck-cli, zoxide"
-	cargo install shuck-cli zoxide 2>/dev/null || warn "some cargo packages failed (maybe already installed)"
+	log "cargo: shuck-cli, zoxide (compiling from source — this may take a while)"
+	cargo install shuck-cli zoxide || warn "some cargo packages failed (maybe already installed)"
 else
 	warn "cargo not found; skipping cargo packages"
 fi
 
-# go: gopls installed by nvim/mason; log GOPATH
 if command -v go >/dev/null 2>&1; then
-	log "go: $(go env GOPATH)/bin (gopls handled by nvim/mason)"
+	log "go: installing shfmt and golangci-lint"
+	go install mvdan.cc/sh/v3/cmd/shfmt@latest
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 else
-	warn "go not found; skipping go packages"
+	warn "go not found; skipping shfmt and golangci-lint"
 fi
 
-# npm global packages (none by default)
-if command -v npm >/dev/null 2>&1; then
-	log "npm global packages: (none)"
+if command -v prettier >/dev/null 2>&1; then
+	log "prettier already installed; skipping"
+elif command -v npm >/dev/null 2>&1; then
+	log "npm: installing prettier"
+	npm install -g prettier || warn "npm install prettier failed"
 else
-	warn "npm not found; skipping npm packages"
+	warn "npm not found; skipping prettier"
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+	log "cargo: installing stylua"
+	cargo install stylua
+else
+	warn "cargo not found; skipping stylua"
 fi
 
 # uv
@@ -176,7 +180,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 if command -v uv >/dev/null 2>&1; then
 	log "uv tool: basedpyright"
-	uv tool install basedpyright 2>/dev/null || warn "uv tool install basedpyright failed"
+	uv tool install basedpyright || warn "uv tool install basedpyright failed"
 else
 	warn "uv not found; skipping uv tools"
 fi
@@ -203,11 +207,27 @@ link() { # link <target> <source>
 	log "link  $target -> $source"
 }
 
+source_hint() {
+	local target="$1" source="$2"
+	if [[ -L "$target" ]]; then
+		link "$target" "$source"
+	elif [[ -e "$target" ]]; then
+		if grep -qF "$source" "$target" 2>/dev/null; then
+			log "ok    $target (dotfiles source present)"
+		else
+			warn "existing $target kept; add this line to it:"
+			printf '  [ -f "%s" ] && . "%s"\n' "$source" "$source"
+		fi
+	else
+		link "$target" "$source"
+	fi
+}
+
 log "Creating symlinks"
 
 # Whole-entry links (no runtime state in their config dir)
-link "$HOME/.zshrc" "$REPO/zsh/zshrc"
-link "$HOME/.bashrc" "$REPO/bash/bashrc"
+source_hint "$HOME/.zshrc" "$REPO/zsh/zshrc"
+source_hint "$HOME/.bashrc" "$REPO/bash/bashrc"
 
 # ~/.bash_profile: distros differ (RHEL/Fedora/Rocky ship one; Debian/Ubuntu
 # don't). If one already exists, augment it in place so its content is kept;
@@ -253,21 +273,9 @@ mkdir -p "$CONFIG/herdr"
 
 # 5 ── misc --------------------------------------------------------------------
 if command -v zsh >/dev/null 2>&1; then
-	if [[ "${SHELL:-}" != "$(command -v zsh)" ]]; then
-		log "Setting login shell to zsh (may prompt for your password)"
-		chsh -s "$(command -v zsh)" 2>/dev/null || warn "chsh failed; set login shell to zsh manually"
-	fi
-	# Ensure zsh in /etc/shells on Linux
-	if [[ "$OS" == "Linux" ]]; then
-		zsh_bin="$(command -v zsh)"
-		if ! grep -q "^$zsh_bin$" /etc/shells 2>/dev/null; then
-			log "Adding $zsh_bin to /etc/shells"
-			echo "$zsh_bin" | sudo tee -a /etc/shells >/dev/null 2>&1 || warn "failed to add zsh to /etc/shells"
-		fi
-	fi
+	log "zsh installed; leaving login shell unchanged"
 else
-	warn "zsh not installed; skipping shell change"
+	warn "zsh not installed"
 fi
 
 log "Done. Open a new terminal (or run: exec zsh)."
-log "If on Linux, add ~/.local/bin and ~/.cargo/bin to PATH in your shell if needed."
