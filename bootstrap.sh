@@ -279,10 +279,6 @@ fi
 mkdir -p "$CONFIG/herdr"
 [[ -f "$REPO/config/herdr/config.toml" ]] && link "$CONFIG/herdr/config.toml" "$REPO/config/herdr/config.toml"
 
-# worktrunk
-mkdir -p "$CONFIG/worktrunk"
-[[ -f "$REPO/config/worktrunk/config.toml" ]] && link "$CONFIG/worktrunk/config.toml" "$REPO/config/worktrunk/config.toml"
-
 # 5 ── misc --------------------------------------------------------------------
 if command -v zsh >/dev/null 2>&1; then
 	log "zsh installed; leaving login shell unchanged"

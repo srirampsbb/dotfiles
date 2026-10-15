@@ -1,2 +1,0 @@
-[projects."nugerrit.ntnxdpro.com/a/main"]
-worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"
