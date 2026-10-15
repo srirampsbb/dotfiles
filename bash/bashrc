@@ -74,3 +74,5 @@ PS1='\[\e[38;5;248m\]\D{%m/%d} \[\e[38;5;244m\]\t \[\e[38;5;39m\]\w \[\e[38;5;13
 if [[ -f "$HOME/.dotfiles/bash/aliases.sh" ]]; then
 	. "$HOME/.dotfiles/bash/aliases.sh"
 fi
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init bash)"; fi

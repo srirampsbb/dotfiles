@@ -64,14 +64,22 @@ if [[ "$OS" == "Darwin" ]]; then
 	brew bundle --file "$REPO/Brewfile"
 elif [[ "$is_rocky_rhel" == true ]]; then
 	log "Rocky/RHEL detected: using dnf"
-	# Base utilities
-	sudo dnf -y install dnf-plugins-core curl wget git zsh util-linux-user
+	# Base utilities — only install (and refresh metadata) if something is missing
+	missing_pkgs=()
+	for pkg in dnf-plugins-core curl wget git zsh util-linux-user; do
+		rpm -q "$pkg" &>/dev/null || missing_pkgs+=("$pkg")
+	done
+	if [ ${#missing_pkgs[@]} -gt 0 ]; then
+		sudo dnf -y install "${missing_pkgs[@]}"
+		sudo dnf -y makecache || true
+	else
+		log "Base packages already installed; skipping metadata refresh"
+	fi
 	# EPEL + CRB (needed for some tools on EL8)
 	if ! dnf repolist | grep -q epel 2>/dev/null; then
 		sudo dnf -y install epel-release || warn "epel-release install failed"
 	fi
 	sudo dnf config-manager --set-enabled crb 2>/dev/null || sudo dnf config-manager --set-enabled powertools 2>/dev/null || true
-	sudo dnf -y makecache || true
 
 	# Core CLI/editor tools
 	sudo dnf -y install \
@@ -270,6 +278,10 @@ fi
 # herdr
 mkdir -p "$CONFIG/herdr"
 [[ -f "$REPO/config/herdr/config.toml" ]] && link "$CONFIG/herdr/config.toml" "$REPO/config/herdr/config.toml"
+
+# worktrunk
+mkdir -p "$CONFIG/worktrunk"
+[[ -f "$REPO/config/worktrunk/config.toml" ]] && link "$CONFIG/worktrunk/config.toml" "$REPO/config/worktrunk/config.toml"
 
 # 5 ── misc --------------------------------------------------------------------
 if command -v zsh >/dev/null 2>&1; then

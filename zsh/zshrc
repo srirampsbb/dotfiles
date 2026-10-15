@@ -171,3 +171,5 @@ eval "$(zoxide init zsh)"
 # "nvim"), which leaves Ctrl+A/Ctrl+E as self-insert instead of beginning/end of
 # line. Explicitly select emacs mode; this also overrides EDITOR auto-detection.
 bindkey -e
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
