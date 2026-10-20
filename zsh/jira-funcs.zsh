@@ -1,6 +1,15 @@
 # ==============================================================================
 # Jira Workflow & Management Functions
 # ==============================================================================
+# Common fzf options (disable mouse to allow terminal text selection/copying)
+typeset -ga FZF_DEFAULT_OPTS
+FZF_DEFAULT_OPTS=(--no-mouse --height=50% --reverse --border)
+
+# Helper: run fzf with our default options plus any extra args
+_fzf_jira() {
+	fzf "${FZF_DEFAULT_OPTS[@]}" "$@"
+}
+
 # Update the jira function list whenever a new external function is added to this file.
 
 _jira_validate_env() {
@@ -131,7 +140,7 @@ _jira_menu() {
 describe_ticket|Show details for a Jira ticket
 create_ticket|Create a Jira ticket interactively
 update_ticket|Update ticket state, fields, comments, or assignee
-list_tickets|Interactive ticket list (assignee, state, epic)
+list_tickets|Interactive ticket list (assignee, priority, state, epic)
 my_filed_tickets|List tickets you reported in a timeframe
 show_epic_summary|List all tickets linked to an Epic
 exit|Exit the Jira menu
@@ -147,11 +156,11 @@ _jira_menu_fzf() {
 	selection=$(printf '%s\n' "describe_ticket|Show details for a Jira ticket" \
 		"create_ticket|Create a Jira ticket interactively" \
 		"update_ticket|Update ticket state, fields, comments, or assignee" \
-		"list_tickets|Interactive ticket list (assignee, state, epic)" \
+		"list_tickets|Interactive ticket list (assignee, priority, state, epic)" \
 		"my_filed_tickets|List tickets you reported in a timeframe" \
 		"show_epic_summary|List all tickets linked to an Epic" \
 		"Exit|Exit the Jira menu" |
-		fzf --prompt="Jira Operation > " --height=50% --reverse --border \
+		_fzf_jira --prompt="Jira Operation > " \
 			--delimiter='|' --with-nth=1,2 --preview='echo {}')
 	if [ -z "$selection" ]; then
 		return 1
@@ -244,7 +253,7 @@ describe_ticket() {
 			"view_comments|View Last 5 Comments" \
 			"view_review_links|View Review Links (GitHub & Gerrit URLs)" \
 			"back|Back to Main Menu" |
-			fzf --prompt="Ticket Sub-Operation > " --height=50% --reverse --border \
+			_fzf_jira --prompt="Ticket Sub-Operation > " \
 				--delimiter='|' --with-nth=1,2)
 
 		if [ -z "$sub_selection" ]; then
@@ -706,7 +715,7 @@ EOF
 	fi
 
 	local PROJECT_SELECTION
-	PROJECT_SELECTION=$(printf '%s\n' "$PROJECT_ROWS" | fzf --prompt="Project > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=1,2)
+	PROJECT_SELECTION=$(printf '%s\n' "$PROJECT_ROWS" | _fzf_jira --prompt="Project > " --delimiter=$'\t' --with-nth=1,2)
 	if [ -z "$PROJECT_SELECTION" ]; then
 		echo "No project selected. Aborting."
 		return 1
@@ -783,7 +792,7 @@ EOF
 		if [ -n "$ISSUE_TYPE_INPUT" ]; then
 			echo "Provided type '$ISSUE_TYPE_INPUT' is not supported. Pick one from the fuzzy list."
 		fi
-		ISSUE_TYPE_NAME=$(printf '%s\n' "${ISSUE_TYPE_LIST[@]}" | fzf --prompt="Ticket Type > " --height=40% --reverse --border)
+		ISSUE_TYPE_NAME=$(printf '%s\n' "${ISSUE_TYPE_LIST[@]}" | _fzf_jira --prompt="Ticket Type > ")
 		if [ -z "$ISSUE_TYPE_NAME" ]; then
 			echo "No ticket type selected. Aborting."
 			return 1
@@ -835,7 +844,7 @@ EOF
 		if [ -n "$PRIORITY_INPUT" ]; then
 			echo "Provided priority '$PRIORITY_INPUT' is not allowed for $PROJECT_KEY / $ISSUE_TYPE_NAME. Pick one from the fuzzy list."
 		fi
-		PRIORITY_SELECTION=$(printf '%s\n' "$PRIORITY_OPTIONS" | fzf --prompt="Priority > " --height=40% --reverse --border --delimiter=$'\t' --with-nth=2)
+		PRIORITY_SELECTION=$(printf '%s\n' "$PRIORITY_OPTIONS" | _fzf_jira --prompt="Priority > " --delimiter=$'\t' --with-nth=2)
 		if [ -z "$PRIORITY_SELECTION" ]; then
 			echo "No priority selected. Aborting."
 			return 1
@@ -882,12 +891,12 @@ EOF
 
 		if [ ${#COMPONENT_NAMES[@]} -gt 0 ]; then
 			local ADD_COMPONENT_CHOICE
-			ADD_COMPONENT_CHOICE=$(printf 'No\nYes\n' | fzf --prompt="Add another component? > " --height=40% --reverse --border)
+			ADD_COMPONENT_CHOICE=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another component? > ")
 			[ "$ADD_COMPONENT_CHOICE" != "Yes" ] && break
 		fi
 
 		local SELECTED_COMPONENT
-		SELECTED_COMPONENT=$(printf '%b' "$AVAILABLE_COMPONENTS" | fzf --prompt="Component > " --height=50% --reverse --border)
+		SELECTED_COMPONENT=$(printf '%b' "$AVAILABLE_COMPONENTS" | _fzf_jira --prompt="Component > ")
 		if [ -z "$SELECTED_COMPONENT" ]; then
 			echo "No component selected. Aborting."
 			return 1
@@ -930,7 +939,7 @@ EOF
 
 	if [ "$PROJECT_KEY" = "ENG" ] && [ -z "$PRIMARY_COMPONENT" ]; then
 		if [ ${#COMPONENT_LIST[@]} -gt 0 ]; then
-			PRIMARY_COMPONENT=$(printf '%s\n' "${COMPONENT_LIST[@]}" | fzf --prompt="Primary Component > " --height=40% --reverse --border)
+			PRIMARY_COMPONENT=$(printf '%s\n' "${COMPONENT_LIST[@]}" | _fzf_jira --prompt="Primary Component > ")
 		else
 			echo -n "Primary Component (ENG required) > "
 			read -r PRIMARY_COMPONENT
@@ -944,9 +953,9 @@ EOF
 	# Assignee prompt: show dropdown with current default, allow picking another user or unassigning
 	local ASSIGNEE_CHOICE
 	if [ -z "$ASSIGNEE" ]; then
-		ASSIGNEE_CHOICE=$(printf "Set Assignee\nUnassign\n" | fzf --prompt="Assignee > " --height=40% --reverse --border)
+		ASSIGNEE_CHOICE=$(printf "Set Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
 	else
-		ASSIGNEE_CHOICE=$(printf "Keep [$ASSIGNEE]\nChange Assignee\nUnassign\n" | fzf --prompt="Assignee > " --height=40% --reverse --border)
+		ASSIGNEE_CHOICE=$(printf "Keep [$ASSIGNEE]\nChange Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
 	fi
 	if [ "$ASSIGNEE_CHOICE" = "Change Assignee" ] || [ "$ASSIGNEE_CHOICE" = "Set Assignee" ]; then
 		local _assignee_query _assignee_rows _selected _picked
@@ -960,7 +969,7 @@ EOF
 			if [ -z "$_assignee_rows" ]; then
 				echo "No assignable users found for '${_assignee_query}'."
 			else
-				_selected=$(printf '%s\n' "$_assignee_rows" | fzf --prompt="Assignee > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+				_selected=$(printf '%s\n' "$_assignee_rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
 				_picked=$(printf '%s' "$_selected" | cut -f1)
 				if [ -n "$_picked" ]; then
 					ASSIGNEE="$_picked"
@@ -977,7 +986,7 @@ EOF
 
 	if [[ "${ISSUE_TYPE_NAME:l}" != "epic" && -z "$SELECTED_EPIC_KEY" ]]; then
 		local LINK_EPIC_CHOICE
-		LINK_EPIC_CHOICE=$(printf "No\nYes\n" | fzf --prompt="Link to an in-progress epic? > " --height=40% --reverse --border)
+		LINK_EPIC_CHOICE=$(printf "No\nYes\n" | _fzf_jira --prompt="Link to an in-progress epic? > ")
 
 		if [ "$LINK_EPIC_CHOICE" = "Yes" ]; then
 			echo "Fetching Epic Link field metadata..."
@@ -1074,7 +1083,7 @@ EOF
 					echo "No eligible in-progress epics found for linking."
 				else
 					local SELECTED_EPIC_LINE
-					SELECTED_EPIC_LINE=$(printf '%s\n' "$EPIC_PICK_LIST_RAW" | fzf --prompt="Epic > " --height=50% --reverse --border --with-nth=2,3 --delimiter=$'\t')
+					SELECTED_EPIC_LINE=$(printf '%s\n' "$EPIC_PICK_LIST_RAW" | _fzf_jira --prompt="Epic > " --with-nth=2,3 --delimiter=$'\t')
 					if [ -n "$SELECTED_EPIC_LINE" ]; then
 						SELECTED_EPIC_KEY=$(printf '%s' "$SELECTED_EPIC_LINE" | cut -f1)
 					fi
@@ -1123,7 +1132,7 @@ EOF
 			break
 		fi
 
-		FIX_VERSION_SELECTION=$(printf '%b' "$CREATE_AVAILABLE_VERSIONS" | fzf --prompt="Fix Version/s > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2)
+		FIX_VERSION_SELECTION=$(printf '%b' "$CREATE_AVAILABLE_VERSIONS" | _fzf_jira --prompt="Fix Version/s > " --delimiter=$'\t' --with-nth=2)
 		if [ -z "$FIX_VERSION_SELECTION" ]; then
 			echo "Fix Version/s selection is required. Aborting."
 			return 1
@@ -1135,7 +1144,7 @@ EOF
 		CREATE_FIX_VERSION_NAMES+=("$FIX_VERSION_NAME")
 
 		local ADD_CREATE_FIX_VERSION
-		ADD_CREATE_FIX_VERSION=$(printf 'No\nYes\n' | fzf --prompt="Add another Fix Version/s? > " --height=40% --reverse --border)
+		ADD_CREATE_FIX_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
 		[ "$ADD_CREATE_FIX_VERSION" != "Yes" ] && break
 	done
 
@@ -1260,7 +1269,7 @@ EOF
 		fi
 
 		if [ -n "$FIELD_OPTIONS" ]; then
-			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | fzf --prompt="${FIELD_LABEL} > " --height=50% --reverse --border --with-nth=2)
+			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | _fzf_jira --prompt="${FIELD_LABEL} > " --with-nth=2)
 			if [ -z "$SELECTED_OPTION" ]; then
 				echo "No value selected for '${FIELD_LABEL}'. Aborting."
 				return 1
@@ -1393,7 +1402,7 @@ EOF
 	echo "================================================================================"
 
 	local CREATE_CONFIRMATION
-	CREATE_CONFIRMATION=$(printf "Create ticket\nCancel\n" | fzf --prompt="Confirm > " --height=40% --reverse --border)
+	CREATE_CONFIRMATION=$(printf "Create ticket\nCancel\n" | _fzf_jira --prompt="Confirm > ")
 	if [ "$CREATE_CONFIRMATION" != "Create ticket" ]; then
 		echo "Ticket creation cancelled."
 		return 1
@@ -1506,7 +1515,7 @@ update_ticket() {
 	echo "Current status: $CURRENT_STATUS"
 
 	local OPERATION
-	OPERATION=$(printf 'State\nAdd comment\nFix Version/s\nAdd Fix Version/s\nAdd label\nUpdate Epic\nChange assignee\nChange QA Contact\n' | fzf --prompt="Operation > " --height=40% --reverse --border)
+	OPERATION=$(printf 'State\nAdd comment\nFix Version/s\nAdd Fix Version/s\nAdd label\nUpdate Epic\nChange assignee\nChange QA Contact\n' | _fzf_jira --prompt="Operation > ")
 	if [ -z "$OPERATION" ]; then
 		echo "No operation selected. Aborting."
 		return 1
@@ -1615,7 +1624,7 @@ update_ticket() {
 			return 1
 		fi
 
-		SELECTED_EPIC=$(printf '%s\n' "$EPIC_ROWS" | fzf --prompt="Epic > " --height=60% --reverse --border --delimiter=$'\t' --with-nth=1,2,3,4)
+		SELECTED_EPIC=$(printf '%s\n' "$EPIC_ROWS" | _fzf_jira --prompt="Epic > " --delimiter=$'\t' --with-nth=1,2,3,4)
 		if [ -z "$SELECTED_EPIC" ]; then
 			echo "No epic selected. Aborting."
 			return 1
@@ -1661,7 +1670,7 @@ update_ticket() {
 			return 1
 		fi
 
-		SELECTED_QA=$(printf '%s\n' "$QA_ROWS" | fzf --prompt="QA Contact > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+		SELECTED_QA=$(printf '%s\n' "$QA_ROWS" | _fzf_jira --prompt="QA Contact > " --delimiter=$'\t' --with-nth=2,3)
 		if [ -z "$SELECTED_QA" ]; then
 			echo "No QA Contact selected. Aborting."
 			return 1
@@ -1708,7 +1717,7 @@ update_ticket() {
 			return 1
 		fi
 
-		SELECTED_ASSIGNEE=$(printf '%s\n' "$ASSIGNEE_ROWS" | fzf --prompt="Assignee > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+		SELECTED_ASSIGNEE=$(printf '%s\n' "$ASSIGNEE_ROWS" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
 		if [ -z "$SELECTED_ASSIGNEE" ]; then
 			echo "No assignee selected. Aborting."
 			return 1
@@ -1773,7 +1782,7 @@ update_ticket() {
 				break
 			fi
 
-			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | fzf --prompt="Add Fix Version/s > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2)
+			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | _fzf_jira --prompt="Add Fix Version/s > " --delimiter=$'\t' --with-nth=2)
 			if [ -z "$SELECTED_VERSION" ]; then
 				echo "No version selected. Aborting."
 				return 1
@@ -1784,7 +1793,7 @@ update_ticket() {
 			ADD_VERSION_NAMES+=("$VERSION_NAME")
 
 			local ADD_ANOTHER_VERSION
-			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | fzf --prompt="Add another Fix Version/s? > " --height=40% --reverse --border)
+			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
 			[ "$ADD_ANOTHER_VERSION" != "Yes" ] && break
 		done
 
@@ -1851,7 +1860,7 @@ update_ticket() {
 				break
 			fi
 
-			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | fzf --prompt="Fix Version/s > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2)
+			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | _fzf_jira --prompt="Fix Version/s > " --delimiter=$'\t' --with-nth=2)
 			if [ -z "$SELECTED_VERSION" ]; then
 				echo "No version selected. Aborting."
 				return 1
@@ -1862,7 +1871,7 @@ update_ticket() {
 			FIX_VERSION_NAMES+=("$VERSION_NAME")
 
 			local ADD_ANOTHER_VERSION
-			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | fzf --prompt="Add another Fix Version/s? > " --height=40% --reverse --border)
+			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
 			[ "$ADD_ANOTHER_VERSION" != "Yes" ] && break
 		done
 
@@ -1908,7 +1917,7 @@ update_ticket() {
 	fi
 
 	local SELECTED_TRANSITION TRANSITION_ID TRANSITION_NAME TARGET_STATUS
-	SELECTED_TRANSITION=$(printf '%s\n' "$TRANSITION_ROWS" | fzf --prompt="Next status > " --height=40% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+	SELECTED_TRANSITION=$(printf '%s\n' "$TRANSITION_ROWS" | _fzf_jira --prompt="Next status > " --delimiter=$'\t' --with-nth=2,3)
 	if [ -z "$SELECTED_TRANSITION" ]; then
 		echo "No transition selected. Aborting."
 		return 1
@@ -1954,7 +1963,7 @@ update_ticket() {
 		fi
 
 		if [ -n "$FIELD_OPTIONS" ]; then
-			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | fzf --prompt="$FIELD_LABEL > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2)
+			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | _fzf_jira --prompt="$FIELD_LABEL > " --delimiter=$'\t' --with-nth=2)
 			if [ -z "$SELECTED_OPTION" ]; then
 				echo "No value selected for '$FIELD_LABEL'. Aborting."
 				return 1
@@ -2008,7 +2017,7 @@ update_ticket() {
 	done <<<"$TRANSITION_FIELD_ROWS"
 
 	local CONFIRMATION
-	CONFIRMATION=$(printf 'Change to %s\nCancel\n' "$TARGET_STATUS" | fzf --prompt="Confirm transition '$TRANSITION_NAME' > " --height=40% --reverse --border)
+	CONFIRMATION=$(printf 'Change to %s\nCancel\n' "$TARGET_STATUS" | _fzf_jira --prompt="Confirm transition '$TRANSITION_NAME' > ")
 	if [ "$CONFIRMATION" != "Change to $TARGET_STATUS" ]; then
 		echo "Ticket update cancelled."
 		return 1
@@ -2037,6 +2046,26 @@ update_ticket() {
 # ------------------------------------------------------------------------------
 # Jira Internal Helpers for list_tickets
 # ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Reusable fzf multi-select with custom keybindings
+# Prints selected items (newline-separated) to stdout
+# Usage: _jira_fzf_multiselect <prompt> <items>
+# ------------------------------------------------------------------------------
+_jira_fzf_multiselect() {
+	local prompt_label="$1"
+	local items="$2"
+	if [ -z "$items" ]; then
+		return 1
+	fi
+	printf '%s\n' "$items" | _fzf_jira --prompt="${prompt_label} > " \
+		--header="Press SPACE to toggle selection, TAB to mark, ENTER to confirm" \
+		-m \
+		--bind='space:toggle' \
+		--bind='ctrl-a:select-all' \
+		--bind='ctrl-d:deselect-all'
+}
+
 _jira_fetch_statuses() {
 	local RESPONSE
 	RESPONSE=$(curl -sS -H "Authorization: Bearer $JIRA_TOKEN" \
@@ -2090,7 +2119,7 @@ _list_tickets_pick_assignee() {
 	fi
 
 	local CHOICE
-	CHOICE=$(printf "Assigned to Me\nAssignee (search from list)\n" | fzf --prompt="Assignee > " --height=40% --reverse --border)
+	CHOICE=$(printf "Assigned to Me\nAssignee (search from list)\n" | _fzf_jira --prompt="Assignee > ")
 
 	if [ -z "$CHOICE" ]; then
 		return 1
@@ -2125,7 +2154,7 @@ _list_tickets_pick_assignee() {
 	fi
 
 	local selected
-	selected=$(printf '%s\n' "$rows" | fzf --prompt="Assignee > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+	selected=$(printf '%s\n' "$rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
 
 	if [ -z "$selected" ]; then
 		return 1
@@ -2150,7 +2179,7 @@ _list_tickets_pick_state() {
 	fi
 
 	local CHOICE
-	CHOICE=$(printf '%s\n' "$statuses" | fzf --prompt="State > " --height=50% --reverse --border --preview='echo {}')
+	CHOICE=$(printf '%s\n' "$statuses" | _jira_fzf_multiselect "State Filter" "$statuses")
 	if [ -z "$CHOICE" ]; then
 		return 1
 	fi
@@ -2184,7 +2213,7 @@ _list_tickets_pick_epic() {
 	fi
 
 	local SELECTION
-	SELECTION=$(printf '%s\n' "$EPIC_ROWS" | fzf --prompt="Epic > " --height=60% --reverse --border \
+	SELECTION=$(printf '%s\n' "$EPIC_ROWS" | _fzf_jira --prompt="Epic > " \
 		--delimiter=$'\t' --with-nth=2,3,4,5 \
 		--preview='echo "Summary: {2}"; echo "Status: {3}"; echo "Assignee: {4}"; echo "Creator: {5}"')
 
@@ -2226,66 +2255,82 @@ list_tickets() {
 	fi
 	echo "Selected assignee: $ASSIGNEE_DISPLAY"
 
-	# Step 2: Pick state filter (optional - can skip)
-	local STATE_CHOICE
-	STATE_CHOICE="Skip"
-	if ! _list_tickets_pick_state; then
-		echo "State selection cancelled. Aborting."
-		return 1
+	# Step 2: Pick which filters to apply (0 or more from: Priority, State, Epic)
+	echo ""
+	local ALL_FILTERS
+	ALL_FILTERS=$'Priority\nState\nEpic'
+	local SELECTED_FILTERS
+	SELECTED_FILTERS=$(_jira_fzf_multiselect "Filters" "$ALL_FILTERS")
+	if [ -z "$SELECTED_FILTERS" ]; then
+		echo "No filters selected."
 	fi
 
-	# Step 3: Optional priority filter (select one or more priorities, or skip for all)
-	echo ""
-	local PRIORITY_CHOICE
-	local PRIORITIES
-	PRIORITIES=$(_jira_fetch_priorities)
-	if [ -z "$PRIORITIES" ]; then
-		echo "Could not fetch priorities from Jira. Skipping priority filter."
-	else
-		# Use fzf with multi-select and custom keybindings
-		PRIORITY_CHOICE=$(printf '%s\n' "$PRIORITIES" | fzf --prompt="Priority Filter > " --height=50% --reverse --border \
-			--header="Press SPACE to toggle selection, TAB to mark, ENTER to confirm" \
-			-m \
-			--bind='space:toggle' \
-			--bind='ctrl-a:select-all' \
-			--bind='ctrl-d:deselect-all')
-	fi
-	if [ -z "$PRIORITY_CHOICE" ]; then
-		echo "Priority filter skipped."
-	else
-		# PRIORITY_CHOICE is newline-separated list of selected priorities
-		ASSIGNEE_PRIORITY="$PRIORITY_CHOICE"
-		local priority_count
-		priority_count=$(printf '%s\n' "$PRIORITY_CHOICE" | wc -l)
-		if [ "$priority_count" -eq 1 ]; then
-			echo "Selected priority: $ASSIGNEE_PRIORITY"
-		else
-			echo "Selected priorities:"
-			printf '  %s\n' $PRIORITY_CHOICE
+	# Process each selected filter
+	if [ -n "$SELECTED_FILTERS" ]; then
+		if [[ "$SELECTED_FILTERS" == *"Priority"* ]]; then
+			echo ""
+			local PRIORITIES
+			PRIORITIES=$(_jira_fetch_priorities)
+			if [ -z "$PRIORITIES" ]; then
+				echo "Could not fetch priorities from Jira. Skipping priority filter."
+			else
+				local PRIORITY_CHOICE
+				PRIORITY_CHOICE=$(_jira_fzf_multiselect "Priority Filter" "$PRIORITIES")
+				if [ -n "$PRIORITY_CHOICE" ]; then
+					ASSIGNEE_PRIORITY="$PRIORITY_CHOICE"
+					local priority_count
+					priority_count=$(printf '%s\n' "$PRIORITY_CHOICE" | wc -l)
+					if [ "$priority_count" -eq 1 ]; then
+						echo "Selected priority: $ASSIGNEE_PRIORITY"
+					else
+						echo "Selected priorities:"
+						printf '  %s\n' $PRIORITY_CHOICE
+					fi
+				else
+					echo "Priority filter skipped."
+				fi
+			fi
 		fi
-	fi
 
-	# Step 4: Optional epic filter (optional - can skip)
-	echo ""
-	local EPIC_CHOICE
-	EPIC_CHOICE=$(printf "Skip\nFilter by Epic\n" | fzf --prompt="Epic Filter > " --height=40% --reverse --border)
-	if [ -z "$EPIC_CHOICE" ]; then
-		echo "Epic filter skipped."
-	elif [ "$EPIC_CHOICE" = "Filter by Epic" ]; then
-		if _list_tickets_pick_epic; then
-			echo "Selected Epic: $EPIC_KEY_SELECTED"
-		else
-			echo "No epic selected. Aborting."
-			return 1
+		if [[ "$SELECTED_FILTERS" == *"State"* ]]; then
+			echo ""
+			if ! _list_tickets_pick_state; then
+				echo "State selection cancelled. Aborting."
+				return 1
+			fi
+			echo "Selected states:"
+			printf '  %s\n' $ASSIGNEE_STATE
 		fi
-	else
-		echo "Epic filter skipped."
+
+		if [[ "$SELECTED_FILTERS" == *"Epic"* ]]; then
+			echo ""
+			if _list_tickets_pick_epic; then
+				echo "Selected Epic: $EPIC_KEY_SELECTED"
+			else
+				echo "No epic selected. Aborting."
+				return 1
+			fi
+		fi
 	fi
 
 	# Build JQL query based on selections
 	local JQL="assignee = \"$ASSIGNEE_USER\""
 	if [ -n "$ASSIGNEE_STATE" ]; then
-		JQL="$JQL AND status = \"$ASSIGNEE_STATE\""
+		# Handle single or multiple states for JQL
+		local state_count
+		state_count=$(printf '%s\n' "$ASSIGNEE_STATE" | wc -l)
+		if [ "$state_count" -eq 1 ]; then
+			JQL="$JQL AND status = \"$ASSIGNEE_STATE\""
+		else
+			# Build state IN (...) clause
+			local state_in_list=""
+			while IFS= read -r s; do
+				[ -z "$s" ] && continue
+				state_in_list+="\"$s\","
+			done <<<"$ASSIGNEE_STATE"
+			state_in_list="${state_in_list%,}"
+			JQL="$JQL AND status IN ($state_in_list)"
+		fi
 	fi
 	if [ -n "$ASSIGNEE_PRIORITY" ]; then
 		# Handle single or multiple priorities for JQL
@@ -2342,41 +2387,40 @@ list_tickets() {
 
 	if [ "$TOTAL" -eq 0 ]; then
 		echo "No tickets found matching the criteria."
-	else
-		_jira_render_ticket_table "$RESPONSE"
+		echo "================================================================================"
+		return 0
 	fi
 
+	local TICKET_ROWS
+	TICKET_ROWS=$(printf '%s' "$RESPONSE" | jq -r '
+ 		.issues[]? | [
+ 			.key,
+ 			(.fields.priority.name? // "Unknown"),
+ 			(.fields.status.name? // "Unknown"),
+ 			(.fields.assignee.displayName? // "Unassigned"),
+ 			(.fields.summary // "")
+ 		] | @tsv
+ 	' 2>/dev/null)
+
+	# Print the result by default
+	_jira_render_ticket_table "$RESPONSE"
 	echo "================================================================================"
 	echo "Total: $TOTAL"
 
-	# Interactive actions on the selected ticket
-	if [ "$TOTAL" -gt 0 ]; then
-		echo ""
-		local ACTION
-		ACTION=$(printf "View Ticket Details\nExport to File\nBack to Main Menu\n" | fzf --prompt="Action > " --height=40% --reverse --border)
-		case "$ACTION" in
-		"View Ticket Details")
-			local KEYS
-			KEYS=$(printf '%s' "$RESPONSE" | jq -r '.issues[]?.key' 2>/dev/null)
-			local SELECTED
-			local _jira_funcs_path="${(%):-%x}"
-			_jira_funcs_path="${_jira_funcs_path:A}"
-			SELECTED=$(printf '%s\n' "$KEYS" | fzf --prompt="Ticket > " --height=50% --reverse --border \
-				--preview="source '${_jira_funcs_path}' 2>/dev/null && describe_ticket {}" \
-				--preview-window=up,60% --bind=enter:accept --bind=esc:abort)
-			if [ -n "$SELECTED" ]; then
-				describe_ticket "$SELECTED"
-			fi
-			;;
-		"Export to File")
-			local outfile
-			outfile="${TMPDIR:-/tmp}/jira-tickets-$(date +%Y%m%d-%H%M%S).txt"
-			_jira_render_ticket_table "$RESPONSE" >"$outfile"
-			echo "Tickets exported to: $outfile"
-			;;
-		"Back to Main Menu")
-			;;
-		esac
+	# Show ticket picker below the table
+	echo ""
+	local SELECTED
+	SELECTED=$(printf '%s\n' "$TICKET_ROWS" | column -t -s $'\t' | _fzf_jira --prompt="Select Ticket > " \
+		--no-multi \
+		--preview="echo {} | cut -f1" \
+		--preview-window=up,5% \
+		--bind=enter:accept \
+		--bind=esc:abort)
+
+	if [ -n "$SELECTED" ]; then
+		local SELECTED_KEY
+		SELECTED_KEY=$(printf '%s' "$SELECTED" | awk '{print $1}')
+		describe_ticket "$SELECTED_KEY"
 	fi
 }
 
