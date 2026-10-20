@@ -45,24 +45,30 @@ if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
 	unsetopt local_options nullglob
 fi
 
-# Jira commands live in zsh/jira and autoload on first use.
-if [[ -z $_JIRA_FUNCS_AUTOLOADED && -d "$HOME/.dotfiles/zsh/jira" ]]; then
+# Jira commands live in zsh/jira. Each filename is the command name.
+# autoload does not replace a function that is already defined, so drop the
+# directory's commands on every zshrc source and `src` picks up new files.
+# The loader is a function so its loop variable stays local. A top-level
+# `local jira_file` with no value reprints the previous path on the next src.
+_jira_register_cmds() {
+	[[ -d "$HOME/.dotfiles/zsh/jira" ]] || return 0
 	fpath=("$HOME/.dotfiles/zsh/jira" $fpath)
-	autoload -Uz \
-		_jira_common \
-		jira \
-		describe_ticket \
-		create_ticket \
-		update_ticket \
-		list_tickets \
-		my_filed_tickets \
-		my_resolved_tickets \
-		my_open_tickets \
-		show_epic_summary \
-		_create_ticket
+	setopt local_options nullglob
+	local -a jira_cmds=()
+	local jira_file
+	for jira_file in "$HOME/.dotfiles/zsh/jira"/*; do
+		[[ -f "$jira_file" ]] || continue
+		jira_cmds+=("${jira_file:t}")
+	done
+	if (( ${#jira_cmds} )); then
+		unfunction "${jira_cmds[@]}" 2>/dev/null
+		autoload -Uz "${jira_cmds[@]}"
+	fi
 	alias show_ticket='describe_ticket'
-	_JIRA_FUNCS_AUTOLOADED=1
-fi
+}
+unset jira_file jira_cmds
+_jira_register_cmds
+unfunction _jira_register_cmds
 
 # Completion Styles
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' # Case-insensitive

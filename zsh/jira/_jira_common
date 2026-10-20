@@ -250,16 +250,18 @@ _jira_field_id() {
 	print -r -- "$id"
 }
 
-# _jira_search JQL [maxResults] [fields]
-# maxResults and fields are omitted from the query when empty.
+# _jira_search JQL [maxResults] [fields] [startAt]
+# maxResults, fields, and startAt are omitted from the query when empty.
 _jira_search() {
 	local jql="$1"
 	local max="${2:-}"
 	local fields="${3:-}"
+	local start_at="${4:-}"
 	local -a args
 	args=(--data-urlencode "jql=${jql}")
 	[ -n "$max" ] && args+=(--data-urlencode "maxResults=${max}")
 	[ -n "$fields" ] && args+=(--data-urlencode "fields=${fields}")
+	[ -n "$start_at" ] && args+=(--data-urlencode "startAt=${start_at}")
 	_jira_api --quiet GET /rest/api/2/search "${args[@]}"
 }
 

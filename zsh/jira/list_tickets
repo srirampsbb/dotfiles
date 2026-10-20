@@ -314,68 +314,116 @@ list_tickets() {
 	fi
 	JQL="$JQL ORDER BY priority DESC, updated DESC"
 
-	echo ""
-	echo "Fetching tickets for $ASSIGNEE_DISPLAY..."
-	echo "================================================================================"
+	# Jira often caps a search at 50 issues. Walk the result set 20 at a time
+	# and offer next/previous as menu rows when another page exists.
+	local PAGE_SIZE=20
+	local PAGE=1
+	local TOTAL=0
+	local PAGES=1
+	local START_AT RANGE_START RANGE_END
+	local RESPONSE TICKET_ROWS MENU SELECTED SELECTED_KEY
 
-	local RESPONSE
-	RESPONSE=$(_jira_search "$JQL" 500)
-
-	if [ -z "$RESPONSE" ]; then
-		echo "Error: Empty response from Jira server."
-		return 1
-	fi
-
-	if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
-		echo "Error fetching tickets:"
-		printf '%s' "$RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null
-		return 1
-	fi
-
-	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
-		echo "Error: Received invalid JSON response from Jira server."
-		return 1
-	fi
-
-	local TOTAL
-	TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total // 0')
-
-	if [ "$TOTAL" -eq 0 ]; then
-		echo "No tickets found matching the criteria."
+	while true; do
+		START_AT=$(( (PAGE - 1) * PAGE_SIZE ))
+		echo ""
+		echo "Fetching tickets for $ASSIGNEE_DISPLAY..."
 		echo "================================================================================"
-		return 0
-	fi
 
-	local TICKET_ROWS
-	TICKET_ROWS=$(printf '%s' "$RESPONSE" | jq -r '
- 		.issues[]? | [
- 			.key,
- 			(.fields.priority.name? // "Unknown"),
- 			(.fields.status.name? // "Unknown"),
- 			(.fields.assignee.displayName? // "Unassigned"),
- 			(.fields.summary // "")
- 		] | @tsv
- 	' 2>/dev/null)
+		# Call the search endpoint directly so paging still works when an
+		# already-loaded _jira_search does not accept startAt.
+		RESPONSE=$(_jira_api --quiet GET /rest/api/2/search \
+			--data-urlencode "jql=${JQL}" \
+			--data-urlencode "maxResults=${PAGE_SIZE}" \
+			--data-urlencode "startAt=${START_AT}")
 
-	# Print the result by default
-	_jira_render_ticket_table "$RESPONSE"
-	echo "================================================================================"
-	echo "Total: $TOTAL"
+		if [ -z "$RESPONSE" ]; then
+			echo "Error: Empty response from Jira server."
+			return 1
+		fi
 
-	# Show ticket picker below the table
-	echo ""
-	local SELECTED
-	SELECTED=$(printf '%s\n' "$TICKET_ROWS" | column -t -s $'\t' | _fzf_jira --prompt="Select Ticket > " \
-		--no-multi \
-		--preview="echo {} | cut -f1" \
-		--preview-window=up,5% \
-		--bind=enter:accept \
-		--bind=esc:abort)
+		if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+			echo "Error fetching tickets:"
+			printf '%s' "$RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null
+			return 1
+		fi
 
-	if [ -n "$SELECTED" ]; then
-		local SELECTED_KEY
+		if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+			echo "Error: Received invalid JSON response from Jira server."
+			return 1
+		fi
+
+		TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total // 0')
+
+		if [ "$TOTAL" -eq 0 ]; then
+			echo "No tickets found matching the criteria."
+			echo "================================================================================"
+			return 0
+		fi
+
+		PAGES=$(( (TOTAL + PAGE_SIZE - 1) / PAGE_SIZE ))
+		if [ "$PAGE" -gt "$PAGES" ]; then
+			PAGE=$PAGES
+			continue
+		fi
+
+		RANGE_START=$(( START_AT + 1 ))
+		RANGE_END=$(( START_AT + PAGE_SIZE ))
+		[ "$RANGE_END" -gt "$TOTAL" ] && RANGE_END=$TOTAL
+
+		TICKET_ROWS=$(printf '%s' "$RESPONSE" | jq -r --argjson limit "$PAGE_SIZE" '
+			.issues[:$limit][]? | [
+				.key,
+				(.fields.priority.name? // "Unknown"),
+				(.fields.status.name? // "Unknown"),
+				(.fields.assignee.displayName? // "Unassigned"),
+				(.fields.summary // "")
+			] | @tsv
+		' 2>/dev/null)
+
+		_jira_render_ticket_table "$(printf '%s' "$RESPONSE" | jq --argjson limit "$PAGE_SIZE" '.issues |= .[:$limit]')"
+		echo "================================================================================"
+		echo "Showing ${RANGE_START}-${RANGE_END} of ${TOTAL} (page ${PAGE} of ${PAGES})"
+
+		# Navigation rows stay at the top of the menu so they stay on screen.
+		MENU=""
+		if [ "$PAGE" -gt 1 ]; then
+			MENU+="<< Previous page"$'\n'
+		fi
+		if [ "$PAGE" -lt "$PAGES" ]; then
+			MENU+=">> Next page"$'\n'
+		fi
+		if [ -n "$TICKET_ROWS" ]; then
+			MENU+="$(printf '%s\n' "$TICKET_ROWS" | column -t -s $'\t')"
+		fi
+
+		echo ""
+		SELECTED=$(printf '%s\n' "$MENU" | _fzf_jira \
+			--prompt="Select Ticket (page ${PAGE}/${PAGES}) > " \
+			--header="Page ${PAGE}/${PAGES} · ${RANGE_START}-${RANGE_END} of ${TOTAL}. ENTER opens a ticket." \
+			--no-multi \
+			--preview="echo {} | cut -f1" \
+			--preview-window=up,5% \
+			--bind=enter:accept \
+			--bind=esc:abort)
+
+		if [ -z "$SELECTED" ]; then
+			return 0
+		fi
+
+		case "$SELECTED" in
+		"<< Previous page")
+			PAGE=$(( PAGE - 1 ))
+			continue
+			;;
+		">> Next page")
+			PAGE=$(( PAGE + 1 ))
+			continue
+			;;
+		esac
+
 		SELECTED_KEY=$(printf '%s' "$SELECTED" | awk '{print $1}')
 		describe_ticket "$SELECTED_KEY"
-	fi
+		return 0
+	done
 }
 list_tickets "$@"
