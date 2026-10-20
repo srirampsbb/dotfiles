@@ -39,7 +39,7 @@ jira() {
 			_jira_menu
 			return
 			;;
-		describe_ticket | create_ticket | update_ticket | my_resolved_tickets | my_filed_tickets | my_open_tickets | show_epic_summary)
+		describe_ticket | create_ticket | update_ticket | list_tickets | my_filed_tickets | show_epic_summary)
 			$cmd "$@"
 			return
 			;;
@@ -69,17 +69,59 @@ jira() {
 }
 
 _jira_authenticate() {
-	local response
-	response=$(curl -fsS -H "Authorization: Bearer $JIRA_TOKEN" "${JIRA_BASE_URL}/rest/api/2/myself" 2>/dev/null) || {
-		echo "Error: Authentication failed. Check JIRA_TOKEN and JIRA_BASE_URL."
+	local response attempt http_code
+	for attempt in 1 2 3; do
+		response=$(curl -sS -w "\n%{http_code}" -H "Authorization: Bearer $JIRA_TOKEN" "${JIRA_BASE_URL}/rest/api/2/myself" 2>/dev/null)
+		http_code="${response##*$'\n'}"
+		response="${response%$'\n'*}"
+		if [ "$http_code" = "000" ] || [ -z "$http_code" ]; then
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: Connection error (code: $http_code)."
+				sleep 1
+				continue
+			fi
+			echo "Error: Authentication failed - connection error (code: $http_code). Check JIRA_BASE_URL is accessible."
+			return 1
+		fi
+		if [ -n "$response" ] && printf '%s' "$response" | jq -e '.errorMessages' >/dev/null 2>&1; then
+			local _err
+			_err=$(printf '%s' "$response" | jq -r '.errorMessages[0]' 2>/dev/null)
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: HTTP $http_code - $_err"
+				sleep 1
+				continue
+			fi
+			echo "Error: Authentication failed: HTTP $http_code - $_err"
+			return 1
+		fi
+		if [ "$http_code" != "200" ]; then
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: HTTP $http_code - $(printf '%s' "$response" | head -c 200)"
+				sleep 1
+				continue
+			fi
+			if [ "$http_code" = "401" ]; then
+				echo "Error: Authentication failed: HTTP 401 - Invalid or expired JIRA_TOKEN."
+			elif [ "$http_code" = "403" ]; then
+				echo "Error: Authentication failed: HTTP 403 - Access denied. Check Jira permissions for your token."
+			else
+				echo "Error: Authentication failed: HTTP $http_code - $(printf '%s' "$response" | head -c 200)"
+			fi
+			return 1
+		fi
+		if [ -n "$response" ] && printf '%s' "$response" | jq -e '.name' >/dev/null 2>&1; then
+			return 0
+		fi
+		if [ "$attempt" -lt 3 ]; then
+			echo "Auth attempt $attempt failed: HTTP $http_code - Unexpected response (no .name field)."
+			sleep 1
+			continue
+		fi
+		echo "Error: Authentication failed: HTTP $http_code - Unexpected response."
 		return 1
-	}
-	if printf '%s' "$response" | jq -e '.name' >/dev/null 2>&1; then
-		return 0
-	else
-		echo "Error: Authentication failed. Invalid JIRA_TOKEN or inaccessible JIRA_BASE_URL."
-		return 1
-	fi
+	done
+	echo "Error: Authentication failed. Check JIRA_TOKEN and JIRA_BASE_URL."
+	return 1
 }
 
 _jira_menu() {
@@ -89,9 +131,8 @@ _jira_menu() {
 describe_ticket|Show details for a Jira ticket
 create_ticket|Create a Jira ticket interactively
 update_ticket|Update ticket state, fields, comments, or assignee
-my_resolved_tickets|List tickets you resolved in a timeframe
+list_tickets|Interactive ticket list (assignee, state, epic)
 my_filed_tickets|List tickets you reported in a timeframe
-my_open_tickets|List your unresolved assigned tickets
 show_epic_summary|List all tickets linked to an Epic
 exit|Exit the Jira menu
 EOF
@@ -106,9 +147,8 @@ _jira_menu_fzf() {
 	selection=$(printf '%s\n' "describe_ticket|Show details for a Jira ticket" \
 		"create_ticket|Create a Jira ticket interactively" \
 		"update_ticket|Update ticket state, fields, comments, or assignee" \
-		"my_resolved_tickets|List tickets you resolved in a timeframe" \
+		"list_tickets|Interactive ticket list (assignee, state, epic)" \
 		"my_filed_tickets|List tickets you reported in a timeframe" \
-		"my_open_tickets|List your unresolved assigned tickets" \
 		"show_epic_summary|List all tickets linked to an Epic" \
 		"Exit|Exit the Jira menu" |
 		fzf --prompt="Jira Operation > " --height=50% --reverse --border \
@@ -163,6 +203,12 @@ describe_ticket() {
 	}
 	curl -s -o "$FIELD_METADATA_FILE" -H "Authorization: Bearer $JIRA_TOKEN" \
 		"${JIRA_BASE_URL}/rest/api/2/field"
+
+	# Validate field metadata; fall back to empty array if fetch failed
+	if [ ! -s "$FIELD_METADATA_FILE" ] || ! jq -e 'type == "array"' "$FIELD_METADATA_FILE" >/dev/null 2>&1; then
+		echo "Warning: Could not fetch Jira field metadata. Using field IDs as fallback."
+		printf '[]' >"$FIELD_METADATA_FILE"
+	fi
 
 	if [ -z "$RAW_RESPONSE" ]; then
 		rm -f "$FIELD_METADATA_FILE"
@@ -1577,7 +1623,8 @@ update_ticket() {
 		EPIC_KEY="${SELECTED_EPIC%%$'\t'*}"
 		local EPIC_REST="${SELECTED_EPIC#*$'\t'}"
 		EPIC_REST="${EPIC_REST#*$'\t'}"
-		EPIC_SUMMARY="${EPIC_REST#*$'\t'}"
+		EPIC_REST="${EPIC_REST#*$'\t'}"
+		EPIC_SUMMARY="${EPIC_REST%%$'\t'*}"
 
 		local EPIC_RESPONSE EPIC_HTTP_STATUS
 		EPIC_RESPONSE=$(curl -sS -w '\n%{http_code}' --request PUT \
@@ -1988,66 +2035,357 @@ update_ticket() {
 }
 
 # ------------------------------------------------------------------------------
-# List Resolved Tickets
-# Search and list tickets resolved by the current user within a specific timeframe.
-# Usage: my_resolved_tickets [TIMEFRAME] (e.g., 30d, 12m, 1y. Default: 12m)
+# Jira Internal Helpers for list_tickets
 # ------------------------------------------------------------------------------
-my_resolved_tickets() {
-	_jira_validate_env || return 1
-
-	local TIMEFRAME="${1:-12m}"
-	local VALUE="${TIMEFRAME%[a-zA-Z]*}"
-	local UNIT="${TIMEFRAME#$VALUE}"
-	local JQL_TIME=""
-
-	# Validate relative timeframe format for JQL
-	case "$UNIT" in
-	d | D) JQL_TIME="-${VALUE}d" ;;
-	m | M) JQL_TIME="-${VALUE}m" ;;
-	w | W) JQL_TIME="-${VALUE}w" ;;
-	y | Y) JQL_TIME="-${VALUE}y" ;;
-	*)
-		echo "Error: Invalid timeframe format '$TIMEFRAME'."
-		echo "Usage: my_resolved_tickets [TIMEFRAME]"
-		echo "Examples: my_resolved_tickets 30d | my_resolved_tickets 6m | my_resolved_tickets 1y"
-		return 1
-		;;
-	esac
-
-	echo "Fetching tickets resolved by you in the last $TIMEFRAME..."
-	echo "================================================================================"
-
-	# Construct and URL-encode JQL query
-	# Use resolutiondate to find tickets resolved by the current user
-	local JQL="resolution IS NOT EMPTY AND resolutiondate >= $JQL_TIME AND assignee = currentUser() ORDER BY resolutiondate DESC"
-	local ENCODED_JQL=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$JQL")
-
+_jira_fetch_statuses() {
 	local RESPONSE
-	RESPONSE=$(curl -s -H "Authorization: Bearer $JIRA_TOKEN" \
-		"${JIRA_BASE_URL}/rest/api/2/search?jql=${ENCODED_JQL}&maxResults=500&fields=key,summary,updated,status,resolution,resolutiondate")
+	RESPONSE=$(curl -sS -H "Authorization: Bearer $JIRA_TOKEN" \
+		"${JIRA_BASE_URL}/rest/api/2/status" 2>/dev/null)
 
-	if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
-		echo "❌ Error fetching tickets:"
-		printf '%s' "$RESPONSE" | jq -r '.errorMessages[]'
+	if [ -z "$RESPONSE" ] || printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
 		return 1
 	fi
 
-	# Output table view of resolved tickets
-	printf '%s' "$RESPONSE" | jq -r '
-    .issues[] | "\(.key)\t|\t\(.fields.resolutiondate[0:10])\t|\t\(.fields.resolution?.name // "Unknown")\t|\t\(.fields.summary)"
-  ' | column -t -s $'\t'
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		return 1
+	fi
 
-	local TOTAL
-	TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total')
-	echo "================================================================================"
-	echo "Total resolved ($TIMEFRAME): $TOTAL"
+	printf '%s' "$RESPONSE" | jq -r '.[]?.name' 2>/dev/null | sort -u
 }
 
 # ------------------------------------------------------------------------------
-# List Filed Tickets
-# Search and list tickets reported/created by the current user within a specific timeframe.
-# Usage: my_filed_tickets [TIMEFRAME] (e.g., 30d, 12m, 1y. Default: 12m)
+# list_tickets: Fetch all available Jira priorities
 # ------------------------------------------------------------------------------
+_jira_fetch_priorities() {
+	local RESPONSE
+	RESPONSE=$(curl -sS -H "Authorization: Bearer $JIRA_TOKEN" \
+		"${JIRA_BASE_URL}/rest/api/2/priority" 2>/dev/null)
+
+	if [ -z "$RESPONSE" ] || printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	printf '%s' "$RESPONSE" | jq -r '.[]?.name' 2>/dev/null | sort -u
+}
+
+# ------------------------------------------------------------------------------
+# list_tickets: Pick assignee (me or search via project assignable users)
+# ------------------------------------------------------------------------------
+_list_tickets_pick_assignee() {
+	emulate -L zsh
+
+	local MYSELF_RESPONSE CURRENT_USER CURRENT_USER_DISPLAY
+	MYSELF_RESPONSE=$(curl -s -H "Authorization: Bearer $JIRA_TOKEN" "${JIRA_BASE_URL}/rest/api/2/myself" 2>/dev/null)
+
+	CURRENT_USER=$(printf '%s' "$MYSELF_RESPONSE" | jq -r '.name // .key // empty' 2>/dev/null)
+	CURRENT_USER_DISPLAY=$(printf '%s' "$MYSELF_RESPONSE" | jq -r '.displayName // .name // .key // "unknown"' 2>/dev/null)
+
+	if [ -z "$CURRENT_USER" ]; then
+		echo "Error: Could not determine current user from Jira."
+		return 1
+	fi
+
+	local CHOICE
+	CHOICE=$(printf "Assigned to Me\nAssignee (search from list)\n" | fzf --prompt="Assignee > " --height=40% --reverse --border)
+
+	if [ -z "$CHOICE" ]; then
+		return 1
+	fi
+
+	if [ "$CHOICE" = "Assigned to Me" ]; then
+		ASSIGNEE_USER="$CURRENT_USER"
+		ASSIGNEE_DISPLAY="Me ($CURRENT_USER_DISPLAY)"
+		return 0
+	fi
+
+	echo -n "Type first 2+ characters of assignee name > "
+	local query
+	read -r query
+	if [ ${#query} -lt 2 ]; then
+		echo "Need at least 2 characters to search assignees."
+		return 1
+	fi
+
+	# First try assignable/search in CLSTR project, then ENG
+	local rows=""
+	for _proj in CLSTR ENG; do
+		rows=$(_jira_assignable_users "$query" "$_proj")
+		if [ -n "$rows" ]; then
+			break
+		fi
+	done
+
+	if [ -z "$rows" ]; then
+		echo "No assignable users found for '${query}'."
+		return 1
+	fi
+
+	local selected
+	selected=$(printf '%s\n' "$rows" | fzf --prompt="Assignee > " --height=50% --reverse --border --delimiter=$'\t' --with-nth=2,3)
+
+	if [ -z "$selected" ]; then
+		return 1
+	fi
+
+	ASSIGNEE_USER=$(printf '%s' "$selected" | cut -f1)
+	local rest="${selected#*$'\t'}"
+	local picked_name
+	picked_name=$(printf '%s' "$rest" | cut -f1)
+	ASSIGNEE_DISPLAY="$picked_name (${ASSIGNEE_USER})"
+}
+
+_list_tickets_pick_state() {
+	emulate -L zsh
+
+	local statuses
+	statuses=$(_jira_fetch_statuses)
+	if [ -z "$statuses" ]; then
+		echo "No statuses found from Jira metadata. Falling back to default list."
+		local default_states=("Open" "In Progress" "Resolved" "Closed" "To Do" "In Review")
+		statuses="${(j:\n:)default_states}"
+	fi
+
+	local CHOICE
+	CHOICE=$(printf '%s\n' "$statuses" | fzf --prompt="State > " --height=50% --reverse --border --preview='echo {}')
+	if [ -z "$CHOICE" ]; then
+		return 1
+	fi
+
+	ASSIGNEE_STATE="$CHOICE"
+}
+
+_list_tickets_pick_epic() {
+	emulate -L zsh
+
+	# Reuse _create_ticket_eligible_epics: finds epics assigned to you, created by you,
+	# and epics linked from issues assigned to you
+	local EPIC_PICK_DATA
+	EPIC_PICK_DATA=$(_create_ticket_eligible_epics 2>/dev/null)
+
+	if [ -z "$EPIC_PICK_DATA" ]; then
+		echo "No eligible epics found (created by you, assigned to you, or with tickets assigned to you)."
+		return 1
+	fi
+
+	# Reformat from key\tepic_status\tassignee\tsummary\tcreator to key\tsummary\tepic_status\tassignee\tcreator
+	local EPIC_ROWS
+	EPIC_ROWS=$(printf '%s\n' "$EPIC_PICK_DATA" | while IFS=$'\t' read -r e_key e_status e_assignee e_summary e_creator; do
+		[ -z "$e_key" ] && continue
+		printf '%s\t%s\t%s\t%s\t%s\n' "$e_key" "$e_summary" "$e_status" "$e_assignee" "$e_creator"
+	done | sort)
+
+	if [ -z "$EPIC_ROWS" ]; then
+		echo "No eligible epics found (created by you, assigned to you, or with tickets assigned to you)."
+		return 1
+	fi
+
+	local SELECTION
+	SELECTION=$(printf '%s\n' "$EPIC_ROWS" | fzf --prompt="Epic > " --height=60% --reverse --border \
+		--delimiter=$'\t' --with-nth=2,3,4,5 \
+		--preview='echo "Summary: {2}"; echo "Status: {3}"; echo "Assignee: {4}"; echo "Creator: {5}"')
+
+	if [ -z "$SELECTION" ]; then
+		return 1
+	fi
+
+	EPIC_KEY_SELECTED=$(printf '%s' "$SELECTION" | cut -f1)
+}
+
+_jira_render_ticket_table() {
+	local response="$1"
+	printf '%s' "$response" | jq -r '
+		["KEY", "PRIORITY", "STATUS", "ASSIGNEE", "SUMMARY"],
+		(.issues[]? | [.key, (.fields.priority.name? // "Unknown"), (.fields.status.name? // "Unknown"), (.fields.assignee.displayName? // "Unassigned"), (.fields.summary // "")])
+		| @tsv
+	' 2>/dev/null | column -t -s $'\t'
+}
+
+# ------------------------------------------------------------------------------
+# List Tickets
+# Interactive ticket list with assignee search, state filter, and epic filter.
+# Usage: list_tickets
+# ------------------------------------------------------------------------------
+list_tickets() {
+	_jira_validate_env || return 1
+	emulate -L zsh
+	# Requires fzf and jq for interactive selection
+	if ! command -v fzf >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+		echo "Error: list_tickets requires both fzf and jq."
+		return 1
+	fi
+
+	# Step 1: Pick assignee
+	local ASSIGNEE_USER="" ASSIGNEE_DISPLAY="" ASSIGNEE_STATE="" ASSIGNEE_PRIORITY="" EPIC_KEY_SELECTED=""
+	if ! _list_tickets_pick_assignee; then
+		echo "No assignee selected. Aborting."
+		return 1
+	fi
+	echo "Selected assignee: $ASSIGNEE_DISPLAY"
+
+	# Step 2: Pick state filter (optional - can skip)
+	local STATE_CHOICE
+	STATE_CHOICE="Skip"
+	if ! _list_tickets_pick_state; then
+		echo "State selection cancelled. Aborting."
+		return 1
+	fi
+
+	# Step 3: Optional priority filter (select one or more priorities, or skip for all)
+	echo ""
+	local PRIORITY_CHOICE
+	local PRIORITIES
+	PRIORITIES=$(_jira_fetch_priorities)
+	if [ -z "$PRIORITIES" ]; then
+		echo "Could not fetch priorities from Jira. Skipping priority filter."
+	else
+		# Use fzf with multi-select and custom keybindings
+		PRIORITY_CHOICE=$(printf '%s\n' "$PRIORITIES" | fzf --prompt="Priority Filter > " --height=50% --reverse --border \
+			--header="Press SPACE to toggle selection, TAB to mark, ENTER to confirm" \
+			-m \
+			--bind='space:toggle' \
+			--bind='ctrl-a:select-all' \
+			--bind='ctrl-d:deselect-all')
+	fi
+	if [ -z "$PRIORITY_CHOICE" ]; then
+		echo "Priority filter skipped."
+	else
+		# PRIORITY_CHOICE is newline-separated list of selected priorities
+		ASSIGNEE_PRIORITY="$PRIORITY_CHOICE"
+		local priority_count
+		priority_count=$(printf '%s\n' "$PRIORITY_CHOICE" | wc -l)
+		if [ "$priority_count" -eq 1 ]; then
+			echo "Selected priority: $ASSIGNEE_PRIORITY"
+		else
+			echo "Selected priorities:"
+			printf '  %s\n' $PRIORITY_CHOICE
+		fi
+	fi
+
+	# Step 4: Optional epic filter (optional - can skip)
+	echo ""
+	local EPIC_CHOICE
+	EPIC_CHOICE=$(printf "Skip\nFilter by Epic\n" | fzf --prompt="Epic Filter > " --height=40% --reverse --border)
+	if [ -z "$EPIC_CHOICE" ]; then
+		echo "Epic filter skipped."
+	elif [ "$EPIC_CHOICE" = "Filter by Epic" ]; then
+		if _list_tickets_pick_epic; then
+			echo "Selected Epic: $EPIC_KEY_SELECTED"
+		else
+			echo "No epic selected. Aborting."
+			return 1
+		fi
+	else
+		echo "Epic filter skipped."
+	fi
+
+	# Build JQL query based on selections
+	local JQL="assignee = \"$ASSIGNEE_USER\""
+	if [ -n "$ASSIGNEE_STATE" ]; then
+		JQL="$JQL AND status = \"$ASSIGNEE_STATE\""
+	fi
+	if [ -n "$ASSIGNEE_PRIORITY" ]; then
+		# Handle single or multiple priorities for JQL
+		local priority_count
+		priority_count=$(printf '%s\n' "$ASSIGNEE_PRIORITY" | wc -l)
+		if [ "$priority_count" -eq 1 ]; then
+			JQL="$JQL AND priority = \"$ASSIGNEE_PRIORITY\""
+		else
+			# Build priority IN (...) clause
+			local priority_in_list=""
+			while IFS= read -r p; do
+				[ -z "$p" ] && continue
+				priority_in_list+="\"$p\","
+			done <<<"$ASSIGNEE_PRIORITY"
+			priority_in_list="${priority_in_list%,}"
+			JQL="$JQL AND priority IN ($priority_in_list)"
+		fi
+	fi
+	if [ -n "$EPIC_KEY_SELECTED" ]; then
+		# Use named field reference "Epic Link" instead of field ID to avoid permission issues
+		JQL="$JQL AND \"Epic Link\" = \"$EPIC_KEY_SELECTED\""
+	fi
+	JQL="$JQL ORDER BY priority DESC, updated DESC"
+
+	local ENCODED_JQL
+	ENCODED_JQL=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$JQL" 2>/dev/null)
+
+	echo ""
+	echo "Fetching tickets for $ASSIGNEE_DISPLAY..."
+	echo "================================================================================"
+
+	local RESPONSE
+	RESPONSE=$(curl -sS -H "Authorization: Bearer $JIRA_TOKEN" \
+		"${JIRA_BASE_URL}/rest/api/2/search?jql=${ENCODED_JQL}&maxResults=500" 2>/dev/null)
+
+	if [ -z "$RESPONSE" ]; then
+		echo "Error: Empty response from Jira server."
+		return 1
+	fi
+
+	if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		echo "Error fetching tickets:"
+		printf '%s' "$RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		echo "Error: Received invalid JSON response from Jira server."
+		return 1
+	fi
+
+	local TOTAL
+	TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total // 0')
+
+	if [ "$TOTAL" -eq 0 ]; then
+		echo "No tickets found matching the criteria."
+	else
+		_jira_render_ticket_table "$RESPONSE"
+	fi
+
+	echo "================================================================================"
+	echo "Total: $TOTAL"
+
+	# Interactive actions on the selected ticket
+	if [ "$TOTAL" -gt 0 ]; then
+		echo ""
+		local ACTION
+		ACTION=$(printf "View Ticket Details\nExport to File\nBack to Main Menu\n" | fzf --prompt="Action > " --height=40% --reverse --border)
+		case "$ACTION" in
+		"View Ticket Details")
+			local KEYS
+			KEYS=$(printf '%s' "$RESPONSE" | jq -r '.issues[]?.key' 2>/dev/null)
+			local SELECTED
+			local _jira_funcs_path="${(%):-%x}"
+			_jira_funcs_path="${_jira_funcs_path:A}"
+			SELECTED=$(printf '%s\n' "$KEYS" | fzf --prompt="Ticket > " --height=50% --reverse --border \
+				--preview="source '${_jira_funcs_path}' 2>/dev/null && describe_ticket {}" \
+				--preview-window=up,60% --bind=enter:accept --bind=esc:abort)
+			if [ -n "$SELECTED" ]; then
+				describe_ticket "$SELECTED"
+			fi
+			;;
+		"Export to File")
+			local outfile
+			outfile="${TMPDIR:-/tmp}/jira-tickets-$(date +%Y%m%d-%H%M%S).txt"
+			_jira_render_ticket_table "$RESPONSE" >"$outfile"
+			echo "Tickets exported to: $outfile"
+			;;
+		"Back to Main Menu")
+			;;
+		esac
+	fi
+}
+
+my_resolved_tickets() {
+	_jira_validate_env || return 1
+	echo "Note: 'my_resolved_tickets' is now deprecated. Use 'list_tickets' for full interactive filtering."
+	list_tickets
+}
+
 my_filed_tickets() {
 	_jira_validate_env || return 1
 	emulate -L zsh
@@ -2088,6 +2426,16 @@ my_filed_tickets() {
 		return 1
 	fi
 
+	if [ -z "$RESPONSE" ]; then
+		echo "Error: Empty response from Jira server."
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		echo "Error: Received invalid JSON response from Jira server."
+		return 1
+	fi
+
 	printf '%s' "$RESPONSE" | jq -r '
     .issues[] | "\(.key)\t|\t\(.fields.created[0:10])\t|\t\(.fields.status.name)\t|\t\(.fields.summary)"
   ' | column -t -s $'\t'
@@ -2100,11 +2448,8 @@ my_filed_tickets() {
 
 my_open_tickets() {
 	_jira_validate_env || return 1
-
-	curl -s -H "Authorization: Bearer $JIRA_TOKEN" \
-		"${JIRA_BASE_URL}/rest/api/2/search?jql=assignee=currentUser()%20AND%20resolution=Unresolved%20ORDER%20BY%20priority%20DESC" |
-		jq -r '["KEY", "PRIORITY", "STATUS", "SUMMARY"], (.issues[] | [.key, .fields.priority.name, .fields.status.name, .fields.summary]) | @tsv' |
-		column -t -s $'\t'
+	echo "Note: 'my_open_tickets' is now deprecated. Use 'list_tickets' for full interactive filtering."
+	list_tickets
 }
 
 show_epic_summary() {
@@ -2183,13 +2528,13 @@ _create_ticket_eligible_epics() {
 	fi
 
 	local epic_link_field_num="${epic_link_field_id#customfield_}"
-	local assigned_epics_jql="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC"
+	local assigned_epics_jql="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND (assignee = currentUser() OR creator = currentUser()) ORDER BY updated DESC"
 	local assigned_epics_encoded
 	assigned_epics_encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$assigned_epics_jql")
 
 	local assigned_epics_response
 	assigned_epics_response=$(curl -s -H "Authorization: Bearer $JIRA_TOKEN" \
-		"${JIRA_BASE_URL}/rest/api/2/search?jql=${assigned_epics_encoded}&maxResults=500&fields=key,summary,status,assignee")
+		"${JIRA_BASE_URL}/rest/api/2/search?jql=${assigned_epics_encoded}&maxResults=500&fields=key,summary,status,assignee,creator")
 
 	if printf '%s' "$assigned_epics_response" | jq -e '.errorMessages' >/dev/null 2>&1; then
 		assigned_epics_response='{"issues":[]}'
@@ -2222,7 +2567,7 @@ _create_ticket_eligible_epics() {
 		related_epics_encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$related_epics_jql")
 
 		related_epics_response=$(curl -s -H "Authorization: Bearer $JIRA_TOKEN" \
-			"${JIRA_BASE_URL}/rest/api/2/search?jql=${related_epics_encoded}&maxResults=500&fields=key,summary,status,assignee")
+			"${JIRA_BASE_URL}/rest/api/2/search?jql=${related_epics_encoded}&maxResults=500&fields=key,summary,status,assignee,creator")
 	fi
 
 	local merged_responses
@@ -2235,11 +2580,12 @@ _create_ticket_eligible_epics() {
       key: .key,
       status: (.fields.status.name // "N/A"),
       assignee: (.fields.assignee.displayName // "Unassigned"),
-      summary: (.fields.summary // "")
+      summary: (.fields.summary // ""),
+      creator: (.fields.creator.displayName // "Unknown")
     })] as $items
     | reduce $items[] as $item ({}; .[$item.key] = $item)
     | to_entries[]
-    | "\(.value.key)\t\(.value.status)\t\(.value.assignee)\t\(.value.summary)"
+    | "\(.value.key)\t\(.value.status)\t\(.value.assignee)\t\(.value.summary)\t\(.value.creator)"
   ' 2>/dev/null
 }
 
@@ -2282,17 +2628,18 @@ _create_ticket() {
 	epic)
 		local -a epic_rows
 		local -a epic_completions
-		local row key status assignee summary
+		local row e_key e_status e_assignee e_summary
 		epic_rows=("${(@f)$(_create_ticket_eligible_epics "$project_key")}")
 		if [ ${#epic_rows[@]} -gt 0 ]; then
 			for row in "${epic_rows[@]}"; do
-				key="${row%%$'\t'*}"
+				e_key="${row%%$'\t'*}"
 				local rest="${row#*$'\t'}"
-				status="${rest%%$'\t'*}"
+				e_status="${rest%%$'\t'*}"
 				rest="${rest#*$'\t'}"
-				assignee="${rest%%$'\t'*}"
-				summary="${rest#*$'\t'}"
-				epic_completions+=("${key}:${status} | ${assignee} | ${summary}")
+				e_assignee="${rest%%$'\t'*}"
+				rest="${rest#*$'\t'}"
+				e_summary="${rest%%$'\t'*}"
+				epic_completions+=("${e_key}:${e_status} | ${e_assignee} | ${e_summary}")
 			done
 			_describe "eligible in-progress epic" epic_completions && ret=0
 		fi
