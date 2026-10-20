@@ -1,0 +1,381 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+# ------------------------------------------------------------------------------
+# Jira Internal Helpers for list_tickets
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Reusable fzf multi-select with custom keybindings
+# Prints selected items (newline-separated) to stdout
+# Usage: _jira_fzf_multiselect <prompt> <items>
+# ------------------------------------------------------------------------------
+_jira_fzf_multiselect() {
+	local prompt_label="$1"
+	local items="$2"
+	if [ -z "$items" ]; then
+		return 1
+	fi
+	printf '%s\n' "$items" | _fzf_jira --prompt="${prompt_label} > " \
+		--header="Press SPACE to toggle selection, TAB to mark, ENTER to confirm" \
+		-m \
+		--bind='space:toggle' \
+		--bind='ctrl-a:select-all' \
+		--bind='ctrl-d:deselect-all'
+}
+
+_jira_fetch_statuses() {
+	local RESPONSE
+	RESPONSE=$(_jira_api --quiet GET /rest/api/2/status)
+
+	if [ -z "$RESPONSE" ] || printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	printf '%s' "$RESPONSE" | jq -r '.[]?.name' 2>/dev/null | sort -u
+}
+
+# ------------------------------------------------------------------------------
+# list_tickets: Fetch all available Jira priorities
+# ------------------------------------------------------------------------------
+_jira_fetch_priorities() {
+	local RESPONSE
+	RESPONSE=$(_jira_api --quiet GET /rest/api/2/priority)
+
+	if [ -z "$RESPONSE" ] || printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		return 1
+	fi
+
+	printf '%s' "$RESPONSE" | jq -r '.[]?.name' 2>/dev/null | sort -u
+}
+
+# ------------------------------------------------------------------------------
+# list_tickets: Pick assignee (me or search via project assignable users)
+# ------------------------------------------------------------------------------
+_list_tickets_pick_assignee() {
+	emulate -L zsh
+
+	local MYSELF_RESPONSE CURRENT_USER CURRENT_USER_DISPLAY
+	MYSELF_RESPONSE=$(_jira_myself_json) || MYSELF_RESPONSE=""
+
+	CURRENT_USER=$(printf '%s' "$MYSELF_RESPONSE" | jq -r '.name // .key // empty' 2>/dev/null)
+	CURRENT_USER_DISPLAY=$(printf '%s' "$MYSELF_RESPONSE" | jq -r '.displayName // .name // .key // "unknown"' 2>/dev/null)
+
+	if [ -z "$CURRENT_USER" ]; then
+		echo "Error: Could not determine current user from Jira."
+		return 1
+	fi
+
+	local CHOICE
+	CHOICE=$(printf "Assigned to Me\nAssignee (search from list)\n" | _fzf_jira --prompt="Assignee > ")
+
+	if [ -z "$CHOICE" ]; then
+		return 1
+	fi
+
+	if [ "$CHOICE" = "Assigned to Me" ]; then
+		ASSIGNEE_USER="$CURRENT_USER"
+		ASSIGNEE_DISPLAY="Me ($CURRENT_USER_DISPLAY)"
+		return 0
+	fi
+
+	echo -n "Type first 2+ characters of assignee name > "
+	local query
+	read -r query
+	if [ ${#query} -lt 2 ]; then
+		echo "Need at least 2 characters to search assignees."
+		return 1
+	fi
+
+	# First try assignable/search in CLSTR project, then ENG
+	local rows=""
+	for _proj in CLSTR ENG; do
+		rows=$(_jira_assignable_users "$query" "$_proj")
+		if [ -n "$rows" ]; then
+			break
+		fi
+	done
+
+	if [ -z "$rows" ]; then
+		echo "No assignable users found for '${query}'."
+		return 1
+	fi
+
+	local selected
+	selected=$(printf '%s\n' "$rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
+
+	if [ -z "$selected" ]; then
+		return 1
+	fi
+
+	ASSIGNEE_USER=$(printf '%s' "$selected" | cut -f1)
+	local rest="${selected#*$'\t'}"
+	local picked_name
+	picked_name=$(printf '%s' "$rest" | cut -f1)
+	ASSIGNEE_DISPLAY="$picked_name (${ASSIGNEE_USER})"
+}
+
+_list_tickets_pick_state() {
+	emulate -L zsh
+
+	local statuses
+	statuses=$(_jira_fetch_statuses)
+	if [ -z "$statuses" ]; then
+		echo "No statuses found from Jira metadata. Falling back to default list."
+		local default_states=("Open" "In Progress" "Resolved" "Closed" "To Do" "In Review")
+		statuses="${(j:\n:)default_states}"
+	fi
+
+	local CHOICE
+	CHOICE=$(printf '%s\n' "$statuses" | _jira_fzf_multiselect "State Filter" "$statuses")
+	if [ -z "$CHOICE" ]; then
+		return 1
+	fi
+
+	ASSIGNEE_STATE="$CHOICE"
+}
+
+_list_tickets_pick_epic() {
+	emulate -L zsh
+
+	# Reuse _create_ticket_eligible_epics: finds epics assigned to you, created by you,
+	# and epics linked from issues assigned to you
+	local EPIC_PICK_DATA
+	EPIC_PICK_DATA=$(_create_ticket_eligible_epics 2>/dev/null)
+
+	if [ -z "$EPIC_PICK_DATA" ]; then
+		echo "No eligible epics found (created by you, assigned to you, or with tickets assigned to you)."
+		return 1
+	fi
+
+	# Reformat from key\tepic_status\tassignee\tsummary\tcreator to key\tsummary\tepic_status\tassignee\tcreator
+	local EPIC_ROWS
+	EPIC_ROWS=$(printf '%s\n' "$EPIC_PICK_DATA" | while IFS=$'\t' read -r e_key e_status e_assignee e_summary e_creator; do
+		[ -z "$e_key" ] && continue
+		printf '%s\t%s\t%s\t%s\t%s\n' "$e_key" "$e_summary" "$e_status" "$e_assignee" "$e_creator"
+	done | sort)
+
+	if [ -z "$EPIC_ROWS" ]; then
+		echo "No eligible epics found (created by you, assigned to you, or with tickets assigned to you)."
+		return 1
+	fi
+
+	local SELECTION
+	SELECTION=$(printf '%s\n' "$EPIC_ROWS" | _fzf_jira --prompt="Epic > " \
+		--delimiter=$'\t' --with-nth=2,3,4,5 \
+		--preview='echo "Summary: {2}"; echo "Status: {3}"; echo "Assignee: {4}"; echo "Creator: {5}"')
+
+	if [ -z "$SELECTION" ]; then
+		return 1
+	fi
+
+	EPIC_KEY_SELECTED=$(printf '%s' "$SELECTION" | cut -f1)
+}
+
+_jira_render_ticket_table() {
+	local response="$1"
+	printf '%s' "$response" | jq -r '
+		["KEY", "PRIORITY", "STATUS", "ASSIGNEE", "SUMMARY"],
+		(.issues[]? | [.key, (.fields.priority.name? // "Unknown"), (.fields.status.name? // "Unknown"), (.fields.assignee.displayName? // "Unassigned"), (.fields.summary // "")])
+		| @tsv
+	' 2>/dev/null | column -t -s $'\t'
+}
+
+# ------------------------------------------------------------------------------
+# List Tickets
+# Interactive ticket list with assignee search, state filter, and epic filter.
+# Usage: list_tickets
+# ------------------------------------------------------------------------------
+list_tickets() {
+	_jira_validate_env || return 1
+	emulate -L zsh
+	# Requires fzf and jq for interactive selection
+	if ! command -v fzf >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+		echo "Error: list_tickets requires both fzf and jq."
+		return 1
+	fi
+
+	# Step 1: Pick assignee
+	local ASSIGNEE_USER="" ASSIGNEE_DISPLAY="" ASSIGNEE_STATE="" ASSIGNEE_PRIORITY="" EPIC_KEY_SELECTED=""
+	if ! _list_tickets_pick_assignee; then
+		echo "No assignee selected. Aborting."
+		return 1
+	fi
+	echo "Selected assignee: $ASSIGNEE_DISPLAY"
+
+	# Step 2: Pick which filters to apply (0 or more from: Priority, State, Epic)
+	echo ""
+	local ALL_FILTERS
+	ALL_FILTERS=$'Priority\nState\nEpic'
+	local SELECTED_FILTERS
+	SELECTED_FILTERS=$(_jira_fzf_multiselect "Filters" "$ALL_FILTERS")
+	if [ -z "$SELECTED_FILTERS" ]; then
+		echo "No filters selected."
+	fi
+
+	# Process each selected filter
+	if [ -n "$SELECTED_FILTERS" ]; then
+		if [[ "$SELECTED_FILTERS" == *"Priority"* ]]; then
+			echo ""
+			local PRIORITIES
+			PRIORITIES=$(_jira_fetch_priorities)
+			if [ -z "$PRIORITIES" ]; then
+				echo "Could not fetch priorities from Jira. Skipping priority filter."
+			else
+				local PRIORITY_CHOICE
+				PRIORITY_CHOICE=$(_jira_fzf_multiselect "Priority Filter" "$PRIORITIES")
+				if [ -n "$PRIORITY_CHOICE" ]; then
+					ASSIGNEE_PRIORITY="$PRIORITY_CHOICE"
+					local priority_count
+					priority_count=$(printf '%s\n' "$PRIORITY_CHOICE" | wc -l)
+					if [ "$priority_count" -eq 1 ]; then
+						echo "Selected priority: $ASSIGNEE_PRIORITY"
+					else
+						echo "Selected priorities:"
+						printf '  %s\n' $PRIORITY_CHOICE
+					fi
+				else
+					echo "Priority filter skipped."
+				fi
+			fi
+		fi
+
+		if [[ "$SELECTED_FILTERS" == *"State"* ]]; then
+			echo ""
+			if ! _list_tickets_pick_state; then
+				echo "State selection cancelled. Aborting."
+				return 1
+			fi
+			echo "Selected states:"
+			printf '  %s\n' $ASSIGNEE_STATE
+		fi
+
+		if [[ "$SELECTED_FILTERS" == *"Epic"* ]]; then
+			echo ""
+			if _list_tickets_pick_epic; then
+				echo "Selected Epic: $EPIC_KEY_SELECTED"
+			else
+				echo "No epic selected. Aborting."
+				return 1
+			fi
+		fi
+	fi
+
+	# Build JQL query based on selections
+	local JQL="assignee = \"$ASSIGNEE_USER\""
+	if [ -n "$ASSIGNEE_STATE" ]; then
+		# Handle single or multiple states for JQL
+		local state_count
+		state_count=$(printf '%s\n' "$ASSIGNEE_STATE" | wc -l)
+		if [ "$state_count" -eq 1 ]; then
+			JQL="$JQL AND status = \"$ASSIGNEE_STATE\""
+		else
+			# Build state IN (...) clause
+			local state_in_list=""
+			while IFS= read -r s; do
+				[ -z "$s" ] && continue
+				state_in_list+="\"$s\","
+			done <<<"$ASSIGNEE_STATE"
+			state_in_list="${state_in_list%,}"
+			JQL="$JQL AND status IN ($state_in_list)"
+		fi
+	fi
+	if [ -n "$ASSIGNEE_PRIORITY" ]; then
+		# Handle single or multiple priorities for JQL
+		local priority_count
+		priority_count=$(printf '%s\n' "$ASSIGNEE_PRIORITY" | wc -l)
+		if [ "$priority_count" -eq 1 ]; then
+			JQL="$JQL AND priority = \"$ASSIGNEE_PRIORITY\""
+		else
+			# Build priority IN (...) clause
+			local priority_in_list=""
+			while IFS= read -r p; do
+				[ -z "$p" ] && continue
+				priority_in_list+="\"$p\","
+			done <<<"$ASSIGNEE_PRIORITY"
+			priority_in_list="${priority_in_list%,}"
+			JQL="$JQL AND priority IN ($priority_in_list)"
+		fi
+	fi
+	if [ -n "$EPIC_KEY_SELECTED" ]; then
+		# Use named field reference "Epic Link" instead of field ID to avoid permission issues
+		JQL="$JQL AND \"Epic Link\" = \"$EPIC_KEY_SELECTED\""
+	fi
+	JQL="$JQL ORDER BY priority DESC, updated DESC"
+
+	echo ""
+	echo "Fetching tickets for $ASSIGNEE_DISPLAY..."
+	echo "================================================================================"
+
+	local RESPONSE
+	RESPONSE=$(_jira_search "$JQL" 500)
+
+	if [ -z "$RESPONSE" ]; then
+		echo "Error: Empty response from Jira server."
+		return 1
+	fi
+
+	if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		echo "Error fetching tickets:"
+		printf '%s' "$RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		echo "Error: Received invalid JSON response from Jira server."
+		return 1
+	fi
+
+	local TOTAL
+	TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total // 0')
+
+	if [ "$TOTAL" -eq 0 ]; then
+		echo "No tickets found matching the criteria."
+		echo "================================================================================"
+		return 0
+	fi
+
+	local TICKET_ROWS
+	TICKET_ROWS=$(printf '%s' "$RESPONSE" | jq -r '
+ 		.issues[]? | [
+ 			.key,
+ 			(.fields.priority.name? // "Unknown"),
+ 			(.fields.status.name? // "Unknown"),
+ 			(.fields.assignee.displayName? // "Unassigned"),
+ 			(.fields.summary // "")
+ 		] | @tsv
+ 	' 2>/dev/null)
+
+	# Print the result by default
+	_jira_render_ticket_table "$RESPONSE"
+	echo "================================================================================"
+	echo "Total: $TOTAL"
+
+	# Show ticket picker below the table
+	echo ""
+	local SELECTED
+	SELECTED=$(printf '%s\n' "$TICKET_ROWS" | column -t -s $'\t' | _fzf_jira --prompt="Select Ticket > " \
+		--no-multi \
+		--preview="echo {} | cut -f1" \
+		--preview-window=up,5% \
+		--bind=enter:accept \
+		--bind=esc:abort)
+
+	if [ -n "$SELECTED" ]; then
+		local SELECTED_KEY
+		SELECTED_KEY=$(printf '%s' "$SELECTED" | awk '{print $1}')
+		describe_ticket "$SELECTED_KEY"
+	fi
+}
+list_tickets "$@"

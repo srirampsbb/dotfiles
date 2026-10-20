@@ -1,0 +1,427 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+# ------------------------------------------------------------------------------
+# Describe Jira Ticket
+# Fetch and neatly format details, priority, assignee, and description for a ticket.
+# Usage: describe_ticket <TICKET_KEY>
+# ------------------------------------------------------------------------------
+describe_ticket() {
+	_jira_validate_env || return 1
+	emulate -L zsh
+	set +x 2>/dev/null
+
+	local ISSUE=""
+
+	if [ -n "$1" ]; then
+		ISSUE="$1"
+	else
+		echo -n "Ticket Key > "
+		read -r ISSUE
+	fi
+
+	if [ -z "$ISSUE" ]; then
+		echo "Error: Ticket key is required."
+		return 1
+	fi
+
+	# Reject standalone numerical inputs without a project key
+	if [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+		echo "Error: Please provide a full ticket key (e.g., CLSTR-$ISSUE or ENG-$ISSUE)."
+		return 1
+	fi
+
+	# Normalize issue key to uppercase
+	ISSUE="$(echo "$ISSUE" | tr '[:lower:]' '[:upper:]')"
+
+	echo "Fetching $ISSUE..."
+
+	local RAW_RESPONSE FIELD_METADATA_FILE
+	RAW_RESPONSE=$(_jira_api --quiet GET "/rest/api/2/issue/$ISSUE")
+	FIELD_METADATA_FILE=$(mktemp "${TMPDIR:-/tmp}/jira-fields.XXXXXX") || {
+		echo "Error: Could not create a temporary file for Jira field metadata."
+		return 1
+	}
+	if _jira_load_fields; then
+		print -r -- "$_JIRA_FIELDS_JSON" >"$FIELD_METADATA_FILE"
+	else
+		echo "Warning: Could not fetch Jira field metadata. Using field IDs as fallback."
+		printf '[]' >"$FIELD_METADATA_FILE"
+	fi
+
+	if [ -z "$RAW_RESPONSE" ]; then
+		rm -f "$FIELD_METADATA_FILE"
+		echo "Error: Received empty response from Jira server."
+		return 1
+	fi
+
+	# Check for API errors
+	if ! printf '%s' "$RAW_RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		rm -f "$FIELD_METADATA_FILE"
+		echo "Error: Received invalid JSON payload from Jira server."
+		return 1
+	fi
+
+	if printf '%s' "$RAW_RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		local _err
+		_err=$(printf '%s' "$RAW_RESPONSE" | jq -r '.errorMessages[0]' 2>/dev/null)
+		rm -f "$FIELD_METADATA_FILE"
+		echo "Error: $_err"
+		return 1
+	fi
+
+	local RAW_DATA_FILE
+	RAW_DATA_FILE=$(mktemp "${TMPDIR:-/tmp}/jira-data.XXXXXX")
+	printf '%s' "$RAW_RESPONSE" >"$RAW_DATA_FILE"
+
+	# Nested menu loop for sub-operations
+	while true; do
+		local sub_selection
+		sub_selection=$(printf '%s\n' \
+			"view_summary|View Summary (ticket details)" \
+			"view_description|View Description" \
+			"view_comments|View Last 5 Comments" \
+			"view_review_links|View Review Links (GitHub & Gerrit URLs)" \
+			"update_ticket|Update Ticket (state, comment, etc.)" \
+			"back|Back to Main Menu" |
+			_fzf_jira --prompt="Ticket Sub-Operation > " \
+				--delimiter='|' --with-nth=1,2)
+
+		if [ -z "$sub_selection" ]; then
+			break
+		fi
+
+		local _sub_op="${sub_selection%%|*}"
+
+		case "$_sub_op" in
+		view_summary)
+			_jira_describe_ticket_summary "$ISSUE" "$RAW_DATA_FILE" "$FIELD_METADATA_FILE"
+			;;
+		view_description)
+			_jira_describe_ticket_description "$RAW_DATA_FILE"
+			;;
+		view_comments)
+			_jira_describe_ticket_comments "$RAW_DATA_FILE"
+			;;
+		view_review_links)
+			_jira_describe_ticket_review_links "$ISSUE" "$RAW_DATA_FILE"
+			;;
+		update_ticket)
+			update_ticket "$ISSUE"
+			;;
+		back)
+			break
+			;;
+		*)
+			echo "Unknown sub-operation: $_sub_op"
+			;;
+		esac
+
+		echo ""
+	done
+
+	rm -f "$FIELD_METADATA_FILE" "$RAW_DATA_FILE"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Summary
+# Shows full ticket details (same as the original describe_ticket output)
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_summary() {
+	set +x 2>/dev/null
+	local ISSUE="$1"
+	local RAW_DATA_FILE="$2"
+	local FIELD_METADATA_FILE="$3"
+
+	echo "--------------------------------------------------------------------------------"
+	echo "Ticket Summary - $ISSUE"
+	echo "--------------------------------------------------------------------------------"
+	python3 -c '
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+jira_token = sys.argv[3]
+jira_base_url = sys.argv[4]
+issue_key = sys.argv[5]
+
+with open(sys.argv[1], encoding="utf-8") as metadata_file:
+    metadata = json.load(metadata_file)
+
+with open(sys.argv[2], encoding="utf-8") as data_file:
+    raw_response = data_file.read()
+
+try:
+    data = json.loads(raw_response)
+except Exception:
+    print("Error: Received invalid JSON payload from server.")
+    sys.exit(1)
+
+errs = data.get("errorMessages")
+if errs:
+    print("Error: " + str(errs[0]))
+    sys.exit(1)
+
+fields = data.get("fields")
+if not fields:
+    print("Error: Ticket not found or access denied.")
+    sys.exit(1)
+
+field_names = {item.get("id"): item.get("name") for item in metadata if item.get("id")}
+key = data.get("key", "N/A")
+ticket_type = fields.get("issuetype", {}).get("name", "N/A") if fields.get("issuetype") else "N/A"
+summary = fields.get("summary", "N/A")
+status = fields.get("status", {}).get("name", "N/A") if fields.get("status") else "N/A"
+priority = fields.get("priority", {}).get("name", "None") if fields.get("priority") else "None"
+assignee = fields.get("assignee", {}).get("displayName", "Unassigned") if fields.get("assignee") else "Unassigned"
+reporter = fields.get("reporter", {}).get("displayName", "Unknown") if fields.get("reporter") else "Unknown"
+components = ", ".join(item.get("name", "") for item in fields.get("components", []) if item.get("name")) or "None"
+created = fields.get("created", "N/A")
+description = fields.get("description") or "No description provided."
+
+
+def display_value(value):
+    if value is None or value == "":
+        return "None"
+    if isinstance(value, list):
+        values = [display_value(item) for item in value]
+        return ", ".join(item for item in values if item != "None") or "None"
+    if isinstance(value, dict):
+        for field in ("displayName", "name", "value", "key"):
+            if value.get(field) not in (None, ""):
+                return str(value[field])
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def find_field(*names):
+    wanted = {name.lower() for name in names}
+    for field_id, value in fields.items():
+        field_name = field_names.get(field_id, field_id)
+        if field_name and field_name.lower() in wanted:
+            return value
+    return None
+
+optional_fields = [
+    ("Affects Version(s)", ("Affects Version/s", "Affects Versions")),
+    ("Fix Version(s)", ("Fix Version/s", "Fix Versions")),
+    ("Integrated Version(s)", ("Integrated Version", "Integrated Version/s", "Integrated Versions", "Integrated version/s")),
+    ("Verified Version(s)", ("Verified Version", "Verified Version/s", "Verified Versions", "Verified version/s")),
+    ("Labels", ("Labels",)),
+]
+
+assignee_manager = find_field("Assignee Manager")
+reporter_manager = find_field("Reporter Manager")
+qa_contact = find_field("QA Contact")
+if qa_contact is None and "customfield_10860" in fields:
+    qa_contact = fields["customfield_10860"]
+
+display_fields = [
+    ("Ticket", key),
+    ("Type", ticket_type),
+    ("Summary", summary),
+    ("Status", status),
+    ("Priority", priority),
+    ("Assignee", assignee),
+    ("Reporter", reporter),
+    ("Component(s)", components),
+    ("Created", created),
+]
+for label, names in optional_fields:
+    value = find_field(*names)
+    if value is not None:
+        display_fields.append((label, display_value(value)))
+
+other_field_ids = [
+    "customfield_14262",
+    "customfield_13762",
+]
+for field_id in other_field_ids:
+    if field_id in fields:
+        field_name = field_names.get(field_id, field_id)
+        display_fields.append((field_name, display_value(fields[field_id])))
+
+epic_link = find_field("Epic Link")
+display_fields.append(("Epic Link", display_value(epic_link)))
+if isinstance(epic_link, str) and epic_link:
+    try:
+        request = urllib.request.Request(
+            jira_base_url + "/rest/api/2/issue/" + epic_link + "?fields=summary",
+            headers={"Authorization": "Bearer " + jira_token}
+        )
+        with urllib.request.urlopen(request) as epic_response:
+            epic_summary = json.load(epic_response).get("fields", {}).get("summary")
+        if epic_summary:
+            display_fields.append(("Epic Summary", epic_summary))
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError):
+        pass
+display_fields.append(("QA Contact", display_value(qa_contact)))
+for label, value in (("Assignee Manager", assignee_manager), ("Reporter Manager", reporter_manager)):
+    if value is not None:
+        display_fields.append((label, display_value(value)))
+
+label_width = max(len(label) for label, _ in display_fields) + 2
+print("================================================================================")
+for label, value in display_fields:
+    print(f"{label:<{label_width}}:  {value}")
+print("================================================================================")
+print("DESCRIPTION:\n" + str(description))
+print("================================================================================")
+' "$FIELD_METADATA_FILE" "$RAW_DATA_FILE" "$JIRA_TOKEN" "$JIRA_BASE_URL" "$ISSUE"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Description
+# Shows just the ticket description
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_description() {
+	set +x 2>/dev/null
+	local RAW_DATA_FILE="$1"
+
+	echo "--------------------------------------------------------------------------------"
+	echo "Ticket Description:"
+	echo "--------------------------------------------------------------------------------"
+	cat "$RAW_DATA_FILE" | jq -r '.fields.description // "No description provided."' 2>/dev/null |
+		sed 's/\r$//' | fold -w 120
+	echo ""
+	echo "================================================================================"
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Comments
+# Shows the last 5 comments, each truncated to 200 characters
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_comments() {
+	{
+		set +x
+		local RAW_DATA_FILE="$1"
+
+		# Get comment count
+		local total
+		total=$(cat "$RAW_DATA_FILE" | jq -r '.fields.comment.total // 0' 2>/dev/null)
+		echo "--------------------------------------------------------------------------------"
+		echo "Comments - Last 5 (most recent first)"
+		echo "--------------------------------------------------------------------------------"
+		echo "Total comments: $total"
+
+		if [ "$total" -eq 0 ] 2>/dev/null; then
+			echo "No comments on this ticket."
+			echo "================================================================================"
+			return 0
+		fi
+
+		local idx=1
+		# Process comments - show most RECENT 5 comments (newest first)
+		local comment_count
+		comment_count=$(cat "$RAW_DATA_FILE" | jq -r '.fields.comment.comments | length' 2>/dev/null)
+
+		# Calculate start index for last 5 comments
+		local start_idx=$((comment_count - 5))
+		[ "$start_idx" -lt 0 ] && start_idx=0
+
+		# Iterate from highest index (most recent) down to start_idx
+		local array_idx=$((comment_count - 1))
+		while [ "$idx" -le 5 ] && [ "$array_idx" -ge "$start_idx" ]; do
+			# Process each comment without exposing trace
+			_jira_process_single_comment "$RAW_DATA_FILE" "$array_idx" "$idx"
+			idx=$((idx + 1))
+			array_idx=$((array_idx - 1))
+		done
+
+		echo "================================================================================"
+	} 2>/dev/null
+}
+__jira_safe_jq() {
+	local file="$1"
+	local filter="$2"
+	cat "$file" | jq -r "$filter" 2>/dev/null
+}
+
+# ------------------------------------------------------------------------------
+# Process a single comment without exposing trace output
+# ------------------------------------------------------------------------------
+_jira_process_single_comment() {
+	set +x 2>/dev/null
+	local RAW_DATA_FILE="$1"
+	local array_idx="$2"
+	local idx="$3"
+
+	local author_name created_date body
+	author_name=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].author.displayName // .fields.comment.comments[$array_idx].author.name" 2>/dev/null)
+	created_date=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].created" 2>/dev/null)
+	body=$(cat "$RAW_DATA_FILE" | jq -r ".fields.comment.comments[$array_idx].body" 2>/dev/null)
+
+	echo "----- Comment $idx: $author_name ($created_date) -----"
+	echo "$body" | cut -c1-200 | fold -w 80 | head -n 5
+	echo ""
+}
+
+# ------------------------------------------------------------------------------
+# describe_ticket sub-operation: View Review Links
+# Finds all GitHub and Gerrit URLs in the ticket description and comments
+# ------------------------------------------------------------------------------
+_jira_describe_ticket_review_links() {
+	set +x 2>/dev/null
+	local ISSUE="$1"
+	local RAW_DATA_FILE="$2"
+
+	echo "--------------------------------------------------------------------------------"
+	echo "Review Links - $ISSUE"
+	echo "--------------------------------------------------------------------------------"
+	echo "Searching for GitHub and Gerrit review links in ticket $ISSUE..."
+
+	# Extract all string values from the entire JSON response
+	local all_text
+	all_text=$(cat "$RAW_DATA_FILE" | jq -r '
+    [paths(scalars) as $path | getpath($path) | select(type == "string" and length > 10)] | join("\n")
+  ' 2>/dev/null)
+
+	if [ -z "$all_text" ]; then
+		echo "No text content found in description or comments."
+		echo "================================================================================"
+		return 0
+	fi
+
+	echo "================================================================================"
+	local found_links=false
+
+	# Search for GitHub URLs (github.com)
+	local github_urls
+	github_urls=$(printf '%s' "$all_text" | grep -oiE 'https?://(?:www\.)?github\.com/[a-zA-Z0-9/_@.~+-]*' 2>/dev/null | sort -u)
+
+	if [ -n "$github_urls" ]; then
+		echo "GitHub Review Links:"
+		echo "--------------------"
+		while IFS= read -r url; do
+			[ -n "$url" ] && echo "  $url"
+		done <<<"$github_urls"
+		echo ""
+		found_links=true
+	fi
+
+	# Search for Gerrit URLs (nugerrit.ntnxdpro.com)
+	local gerrit_urls
+	gerrit_urls=$(printf '%s' "$all_text" | grep -oiE 'https?://nugerrit\.ntnxdpro\.com/[a-zA-Z0-9/_@.~+:=,-]*' 2>/dev/null | sort -u)
+
+	if [ -n "$gerrit_urls" ]; then
+		echo "Gerrit Review Links:"
+		echo "--------------------"
+		while IFS= read -r url; do
+			[ -n "$url" ] && echo "  $url"
+		done <<<"$gerrit_urls"
+		echo ""
+		found_links=true
+	fi
+
+	if [ "$found_links" = false ]; then
+		echo "No GitHub or Gerrit review links found in ticket description or comments."
+	fi
+
+	echo "================================================================================"
+}
+describe_ticket "$@"

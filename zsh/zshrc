@@ -45,6 +45,25 @@ if [[ -d "$HOME/.dotfiles/zsh/local" ]]; then
 	unsetopt local_options nullglob
 fi
 
+# Jira commands live in zsh/jira and autoload on first use.
+if [[ -z $_JIRA_FUNCS_AUTOLOADED && -d "$HOME/.dotfiles/zsh/jira" ]]; then
+	fpath=("$HOME/.dotfiles/zsh/jira" $fpath)
+	autoload -Uz \
+		_jira_common \
+		jira \
+		describe_ticket \
+		create_ticket \
+		update_ticket \
+		list_tickets \
+		my_filed_tickets \
+		my_resolved_tickets \
+		my_open_tickets \
+		show_epic_summary \
+		_create_ticket
+	alias show_ticket='describe_ticket'
+	_JIRA_FUNCS_AUTOLOADED=1
+fi
+
 # Completion Styles
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}' # Case-insensitive
 zstyle ':completion:*' menu select                        # Interactive menu
@@ -106,6 +125,9 @@ done
 if [[ -z "$_ZSHRC_COMPINIT_DONE" ]]; then
 	autoload -Uz compinit
 	compinit -C
+	if (( $+functions[compdef] )); then
+		compdef _create_ticket create_ticket
+	fi
 	_ZSHRC_COMPINIT_DONE=1
 fi
 

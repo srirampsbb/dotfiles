@@ -1,0 +1,32 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+show_epic_summary() {
+	_jira_validate_env || return 1
+
+	local epic_key="${1:-}"
+
+	if [[ -z "$epic_key" ]]; then
+		echo -n "Enter Epic Key (e.g., PROJECT-1234): "
+		read -r epic_key
+	fi
+
+	if [[ -z "$epic_key" ]]; then
+		echo "Error: Epic key is required."
+		return 1
+	fi
+
+	epic_key=$(printf '%s' "$epic_key" | tr '[:lower:]' '[:upper:]')
+
+	_jira_search "\"Epic Link\" = ${epic_key} ORDER BY priority DESC" |
+		jq -r '
+      ["KEY", "PRIORITY", "STATUS", "SUMMARY"],
+      (.issues[]? | [.key, (.fields.priority.name // "Unknown"), (.fields.status.name // "Unknown"), (.fields.summary // "")])
+      | @tsv
+    ' |
+		column -t -s $'\t'
+}
+show_epic_summary "$@"

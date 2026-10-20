@@ -1,0 +1,64 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+my_filed_tickets() {
+	_jira_validate_env || return 1
+	emulate -L zsh
+	local TIMEFRAME="${1:-12m}"
+
+	local VALUE="${TIMEFRAME%%[a-zA-Z]*}"
+	local UNIT="${(L)TIMEFRAME#$VALUE}"
+	local JQL_TIME=""
+
+	# Convert units into Jira-compatible relative durations
+	case "$UNIT" in
+	d) JQL_TIME="-${VALUE}d" ;;
+	w) JQL_TIME="-${VALUE}w" ;;
+	h) JQL_TIME="-${VALUE}h" ;;
+	m) JQL_TIME="-$((VALUE * 30))d" ;;  # Convert months to days (1m = 30d)
+	y) JQL_TIME="-$((VALUE * 365))d" ;; # Convert years to days (1y = 365d)
+	*)
+		echo "Error: Invalid timeframe format '$TIMEFRAME'."
+		echo "Usage: my_filed_tickets [TIMEFRAME]"
+		echo "Examples: my_filed_tickets 30d | my_filed_tickets 6m | my_filed_tickets 1y"
+		return 1
+		;;
+	esac
+
+	echo "Fetching tickets filed by you in the last $TIMEFRAME (JQL: created >= $JQL_TIME)..."
+	echo "================================================================================"
+
+	local JQL="reporter = currentUser() AND created >= $JQL_TIME ORDER BY created DESC"
+
+	local RESPONSE
+	RESPONSE=$(_jira_search "$JQL" 500 "key,summary,created,status")
+
+	if printf '%s' "$RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		echo "❌ Error fetching tickets:"
+		printf '%s' "$RESPONSE" | jq -r '.errorMessages[]'
+		return 1
+	fi
+
+	if [ -z "$RESPONSE" ]; then
+		echo "Error: Empty response from Jira server."
+		return 1
+	fi
+
+	if ! printf '%s' "$RESPONSE" | jq -e '.' >/dev/null 2>&1; then
+		echo "Error: Received invalid JSON response from Jira server."
+		return 1
+	fi
+
+	printf '%s' "$RESPONSE" | jq -r '
+    .issues[] | "\(.key)\t|\t\(.fields.created[0:10])\t|\t\(.fields.status.name)\t|\t\(.fields.summary)"
+  ' | column -t -s $'\t'
+
+	local TOTAL
+	TOTAL=$(printf '%s' "$RESPONSE" | jq -r '.total')
+	echo "================================================================================"
+	echo "Total filed ($TIMEFRAME): $TOTAL"
+}
+my_filed_tickets "$@"

@@ -1,0 +1,87 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+jira() {
+	_jira_validate_env || return 1
+	set +x 2>/dev/null
+
+	if ! _jira_authenticate; then
+		echo "Error: Jira authentication failed. Please check JIRA_TOKEN and JIRA_BASE_URL."
+		return 1
+	fi
+
+	if [ $# -gt 0 ]; then
+		local cmd="$1"
+		shift
+		case "$cmd" in
+		help | list)
+			_jira_menu
+			return
+			;;
+		describe_ticket | create_ticket | update_ticket | list_tickets | my_filed_tickets | show_epic_summary)
+			$cmd "$@"
+			return
+			;;
+		*)
+			echo "Error: Unknown Jira command '$cmd'. Type 'jira help' to see available operations."
+			return 1
+			;;
+		esac
+	fi
+
+	# Iterative menu mode
+	while true; do
+		local selection
+		selection=$(_jira_menu_fzf)
+		if [ -z "$selection" ]; then
+			echo "No operation selected. Exiting."
+			return 0
+		fi
+		if [ "$selection" = "Exit" ]; then
+			echo "Exiting Jira menu."
+			return 0
+		fi
+		$selection
+		echo ""
+		echo "Operation complete. Returning to menu..."
+	done
+}
+
+_jira_menu() {
+	local items
+	items=$(
+		cat <<'EOF'
+describe_ticket|Show details for a Jira ticket
+create_ticket|Create a Jira ticket interactively
+update_ticket|Update ticket state, fields, comments, or assignee
+list_tickets|Interactive ticket list (assignee, priority, state, epic)
+my_filed_tickets|List tickets you reported in a timeframe
+show_epic_summary|List all tickets linked to an Epic
+exit|Exit the Jira menu
+EOF
+	)
+	printf '%s\n' "$items" | while IFS='|' read -r name desc; do
+		printf '  %-22s %s\n' "$name" "$desc"
+	done
+}
+
+_jira_menu_fzf() {
+	local selection
+	selection=$(printf '%s\n' "describe_ticket|Show details for a Jira ticket" \
+		"create_ticket|Create a Jira ticket interactively" \
+		"update_ticket|Update ticket state, fields, comments, or assignee" \
+		"list_tickets|Interactive ticket list (assignee, priority, state, epic)" \
+		"my_filed_tickets|List tickets you reported in a timeframe" \
+		"show_epic_summary|List all tickets linked to an Epic" \
+		"Exit|Exit the Jira menu" |
+		_fzf_jira --prompt="Jira Operation > " \
+			--delimiter='|' --with-nth=1,2 --preview='echo {}')
+	if [ -z "$selection" ]; then
+		return 1
+	fi
+	printf '%s' "${selection%%|*}"
+}
+jira "$@"

@@ -1,0 +1,12 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+my_resolved_tickets() {
+	_jira_validate_env || return 1
+	echo "Note: 'my_resolved_tickets' is now deprecated. Use 'list_tickets' for full interactive filtering."
+	list_tickets
+}
+my_resolved_tickets "$@"

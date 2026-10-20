@@ -1,0 +1,98 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+# ------------------------------------------------------------------------------
+# Completions for create_ticket
+# Required args: PRIORITY TYPE COMPONENT TITLE DESCRIPTION
+# ------------------------------------------------------------------------------
+_create_ticket_issue_types() {
+	_jira_validate_env || return 1
+
+	local project_key="${1:-CLSTR}"
+	local issue_types
+
+	issue_types=$(_jira_api --quiet GET /rest/api/2/issue/createmeta \
+		--data-urlencode "projectKeys=${project_key}" \
+		--data-urlencode "expand=projects.issuetypes" |
+		jq -r '.projects[0].issuetypes[]? | select(.subtask != true) | .name' 2>/dev/null)
+
+	if [ -n "$issue_types" ]; then
+		echo "$issue_types"
+		return 0
+	fi
+
+	_jira_api --quiet GET "/rest/api/2/project/${project_key}" |
+		jq -r '.issueTypes[]? | select(.subtask != true) | .name' 2>/dev/null
+}
+
+_create_ticket_components() {
+	_jira_validate_env || return 1
+
+	local project_key="${1:-CLSTR}"
+	_jira_api --quiet GET "/rest/api/2/project/${project_key}/components" |
+		jq -r '.[].name' 2>/dev/null
+}
+
+_create_ticket() {
+	emulate -L zsh
+	local context state line ret=1
+	typeset -A opt_args
+	local project_key="${words[2]:u}"
+	if [[ "$project_key" != "CLSTR" && "$project_key" != "ENG" ]]; then
+		project_key="CLSTR"
+	fi
+
+	_arguments -C \
+		'(-h --help)'{-h,--help}'[show help for create_ticket]' \
+		'1:project:(CLSTR ENG)' \
+		'2:priority:_message "priority name or ID"' \
+		'3:ticket type:->issue_type' \
+		'4:component:->component' \
+		'5:title:_message "ticket title"' \
+		'6:description:_message "ticket description"' \
+		'7:assignee (optional):_message "jira username (optional)"' \
+		'8:primary component (ENG):_message "primary component (ENG tickets only)"' \
+		'9:epic key (optional):->epic' && ret=0
+
+	case "$state" in
+	issue_type)
+		local -a issue_types
+		issue_types=("${(@f)$(_create_ticket_issue_types "$project_key")}")
+		if [ ${#issue_types[@]} -gt 0 ]; then
+			_describe "issue type" issue_types && ret=0
+		fi
+		;;
+	component)
+		local -a components
+		components=("${(@f)$(_create_ticket_components "$project_key")}")
+		if [ ${#components[@]} -gt 0 ]; then
+			_describe "component" components && ret=0
+		fi
+		;;
+	epic)
+		local -a epic_rows
+		local -a epic_completions
+		local row e_key e_status e_assignee e_summary
+		epic_rows=("${(@f)$(_create_ticket_eligible_epics "$project_key")}")
+		if [ ${#epic_rows[@]} -gt 0 ]; then
+			for row in "${epic_rows[@]}"; do
+				e_key="${row%%$'\t'*}"
+				local rest="${row#*$'\t'}"
+				e_status="${rest%%$'\t'*}"
+				rest="${rest#*$'\t'}"
+				e_assignee="${rest%%$'\t'*}"
+				rest="${rest#*$'\t'}"
+				e_summary="${rest%%$'\t'*}"
+				epic_completions+=("${e_key}:${e_status} | ${e_assignee} | ${e_summary}")
+			done
+			_describe "eligible in-progress epic" epic_completions && ret=0
+		fi
+		;;
+	esac
+
+	return ret
+}
+_create_ticket "$@"

@@ -1,0 +1,364 @@
+# Shared Jira client. Autoloaded; defines HTTP, session cache, and helpers used
+# by every command. Query values are encoded by curl --data-urlencode.
+
+# jira menus pass these flags on the command line so startup does not clobber
+# the exported FZF_DEFAULT_OPTS string.
+_fzf_jira() {
+	fzf --no-mouse --height=50% --reverse --border "$@"
+}
+
+_jira_validate_env() {
+	if [ -z "$JIRA_BASE_URL" ]; then
+		echo "Error: JIRA_BASE_URL is not set." >&2
+		echo "Set it with: export JIRA_BASE_URL='https://jira.example.com'" >&2
+		return 1
+	fi
+	if [ -z "$JIRA_TOKEN" ]; then
+		echo "Error: JIRA_TOKEN is not set." >&2
+		echo "Set it with: export JIRA_TOKEN='<your-token>'" >&2
+		return 1
+	fi
+}
+
+# _jira_api [--fail] [--http-code] [--quiet] [--output FILE] METHOD PATH [curl args...]
+# GET requests that include --data-urlencode are sent with curl -G.
+# --http-code records the status for _jira_take_http_code. Call that in the
+# parent shell after capturing the body; the request itself runs in a subshell.
+# Prints the response body on stdout. Does not print when --output is set.
+_jira_api() {
+	emulate -L zsh
+	local fail=0 want_code=0 quiet=0 output=""
+	_JIRA_HTTP_CODE=""
+
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--fail)
+			fail=1
+			shift
+			;;
+		--http-code)
+			want_code=1
+			shift
+			;;
+		--quiet)
+			quiet=1
+			shift
+			;;
+		--output)
+			output="$2"
+			shift 2
+			;;
+		*)
+			break
+			;;
+		esac
+	done
+
+	local method="$1"
+	local api_path="$2"
+	shift 2 || return 2
+
+	_jira_validate_env || return 1
+
+	local -a cmd
+	local arg use_get=0
+	cmd=(command curl -sS -H "Authorization: Bearer ${JIRA_TOKEN}")
+	[ "$fail" -eq 1 ] && cmd+=(-f)
+	[ -n "$output" ] && cmd+=(-o "$output")
+	[ "$want_code" -eq 1 ] && cmd+=(-w $'\n%{http_code}')
+
+	if [ "$method" = "GET" ] || [ "$method" = "get" ]; then
+		for arg in "$@"; do
+			if [ "$arg" = "--data-urlencode" ]; then
+				use_get=1
+				break
+			fi
+		done
+	fi
+
+	if [ "$use_get" -eq 1 ]; then
+		cmd+=(-G)
+	elif [ "$method" != "GET" ] && [ "$method" != "get" ]; then
+		cmd+=(-X "$method")
+	fi
+
+	local url="${JIRA_BASE_URL%/}${api_path}"
+	local response rc
+	if [ "$quiet" -eq 1 ]; then
+		response="$("${cmd[@]}" "$@" "$url" 2>/dev/null)"
+	else
+		response="$("${cmd[@]}" "$@" "$url")"
+	fi
+	rc=$?
+
+	if [ "$want_code" -eq 1 ]; then
+		_JIRA_HTTP_CODE="${response##*$'\n'}"
+		[ -z "$_JIRA_HTTP_CODE" ] && _JIRA_HTTP_CODE="000"
+		response="${response%$'\n'*}"
+		print -r -- "$_JIRA_HTTP_CODE" >"${TMPDIR:-/tmp}/jira-http-code.$$"
+	fi
+
+	if [ -z "$output" ]; then
+		print -r -- "$response"
+	fi
+	return "$rc"
+}
+
+# Read the status saved by the most recent --http-code request.
+_jira_take_http_code() {
+	local file="${TMPDIR:-/tmp}/jira-http-code.$$"
+	_JIRA_HTTP_CODE=""
+	if [ -r "$file" ]; then
+		IFS= read -r _JIRA_HTTP_CODE <"$file"
+		rm -f "$file"
+	fi
+}
+
+# Session cache files survive command substitutions, which run in a subshell.
+_jira_cache_file() {
+	local dir="${TMPDIR:-/tmp}/jira-cache.$$"
+	mkdir -p "$dir"
+	chmod 700 "$dir" 2>/dev/null || true
+	print -r -- "$dir/$1"
+}
+
+_jira_store_myself() {
+	local file
+	file=$(_jira_cache_file myself.json)
+	print -r -- "$1" >"$file"
+	chmod 600 "$file" 2>/dev/null || true
+	_JIRA_MYSELF_JSON="$1"
+}
+
+# One quiet fetch of /myself for the rest of the shell session.
+_jira_load_myself() {
+	local file body
+	file=$(_jira_cache_file myself.json)
+	if [ -s "$file" ]; then
+		_JIRA_MYSELF_JSON=$(<"$file")
+		return 0
+	fi
+	body=$(_jira_api --http-code --quiet GET /rest/api/2/myself) || true
+	_jira_take_http_code
+	if [ "$_JIRA_HTTP_CODE" = "200" ] && printf '%s' "$body" | jq -e '.name // .key' >/dev/null 2>&1; then
+		_jira_store_myself "$body"
+		return 0
+	fi
+	return 1
+}
+
+_jira_myself_json() {
+	_jira_load_myself || return 1
+	print -r -- "$_JIRA_MYSELF_JSON"
+}
+
+_jira_current_user() {
+	_jira_load_myself || return 1
+	printf '%s' "$_JIRA_MYSELF_JSON" | jq -r '.name // .key // empty'
+}
+
+_jira_authenticate() {
+	local cached
+	cached=$(_jira_cache_file myself.json)
+	if [ -s "$cached" ]; then
+		_JIRA_MYSELF_JSON=$(<"$cached")
+		return 0
+	fi
+
+	local response attempt http_code
+	for attempt in 1 2 3; do
+		response=$(_jira_api --http-code --quiet GET /rest/api/2/myself) || true
+		_jira_take_http_code
+		http_code="$_JIRA_HTTP_CODE"
+		if [ "$http_code" = "000" ] || [ -z "$http_code" ]; then
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: Connection error (code: $http_code)."
+				sleep 1
+				continue
+			fi
+			echo "Error: Authentication failed - connection error (code: $http_code). Check JIRA_BASE_URL is accessible."
+			return 1
+		fi
+		if [ -n "$response" ] && printf '%s' "$response" | jq -e '.errorMessages' >/dev/null 2>&1; then
+			local _err
+			_err=$(printf '%s' "$response" | jq -r '.errorMessages[0]' 2>/dev/null)
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: HTTP $http_code - $_err"
+				sleep 1
+				continue
+			fi
+			echo "Error: Authentication failed: HTTP $http_code - $_err"
+			return 1
+		fi
+		if [ "$http_code" != "200" ]; then
+			if [ "$attempt" -lt 3 ]; then
+				echo "Auth attempt $attempt failed: HTTP $http_code - $(printf '%s' "$response" | head -c 200)"
+				sleep 1
+				continue
+			fi
+			if [ "$http_code" = "401" ]; then
+				echo "Error: Authentication failed: HTTP 401 - Invalid or expired JIRA_TOKEN."
+			elif [ "$http_code" = "403" ]; then
+				echo "Error: Authentication failed: HTTP 403 - Access denied. Check Jira permissions for your token."
+			else
+				echo "Error: Authentication failed: HTTP $http_code - $(printf '%s' "$response" | head -c 200)"
+			fi
+			return 1
+		fi
+		if [ -n "$response" ] && printf '%s' "$response" | jq -e '.name' >/dev/null 2>&1; then
+			_jira_store_myself "$response"
+			return 0
+		fi
+		if [ "$attempt" -lt 3 ]; then
+			echo "Auth attempt $attempt failed: HTTP $http_code - Unexpected response (no .name field)."
+			sleep 1
+			continue
+		fi
+		echo "Error: Authentication failed: HTTP $http_code - Unexpected response."
+		return 1
+	done
+	echo "Error: Authentication failed. Check JIRA_TOKEN and JIRA_BASE_URL."
+	return 1
+}
+
+# One fetch of /field for the rest of the shell session. Stores a JSON array.
+_jira_load_fields() {
+	local file body
+	file=$(_jira_cache_file fields.json)
+	if [ -s "$file" ]; then
+		_JIRA_FIELDS_JSON=$(<"$file")
+		return 0
+	fi
+	body=$(_jira_api --quiet GET /rest/api/2/field) || return 1
+	if ! printf '%s' "$body" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		return 1
+	fi
+	print -r -- "$body" >"$file"
+	chmod 600 "$file" 2>/dev/null || true
+	_JIRA_FIELDS_JSON="$body"
+}
+
+# Print the id of the first field with this display name.
+_jira_field_id() {
+	local name="$1"
+	local id
+	_jira_load_fields || return 1
+	id=$(printf '%s' "$_JIRA_FIELDS_JSON" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n 1)
+	if [ -z "$id" ] || [ "$id" = "null" ]; then
+		return 1
+	fi
+	print -r -- "$id"
+}
+
+# _jira_search JQL [maxResults] [fields]
+# maxResults and fields are omitted from the query when empty.
+_jira_search() {
+	local jql="$1"
+	local max="${2:-}"
+	local fields="${3:-}"
+	local -a args
+	args=(--data-urlencode "jql=${jql}")
+	[ -n "$max" ] && args+=(--data-urlencode "maxResults=${max}")
+	[ -n "$fields" ] && args+=(--data-urlencode "fields=${fields}")
+	_jira_api --quiet GET /rest/api/2/search "${args[@]}"
+}
+
+_jira_list_projects() {
+	_jira_validate_env || return 1
+	_jira_api --fail --quiet GET /rest/api/2/project |
+		jq -r '.[]? | select(.key != null) | [.key, (.name // "")] | @tsv' 2>/dev/null
+}
+
+# Search users who can be assigned on a project.
+# Usage: _jira_assignable_users <query> <project_key>
+# Prints TSV: username, display name, email.
+_jira_assignable_users() {
+	_jira_validate_env || return 1
+
+	local query="$1"
+	local project_key="$2"
+	if [ ${#query} -lt 2 ] || [ -z "$project_key" ]; then
+		return 0
+	fi
+
+	local response
+	response=$(_jira_api --fail --quiet GET /rest/api/2/user/assignable/search \
+		--data-urlencode "project=${project_key}" \
+		--data-urlencode "username=${query}" \
+		--data-urlencode "maxResults=100") || return 0
+
+	printf '%s' "$response" | jq -r '
+    if type == "array" then
+      .[]?
+      | select(.active != false)
+      | [(.name // .key // ""), (.displayName // .name // "Unknown"), (.emailAddress // "")]
+      | @tsv
+    else
+      empty
+    end
+  ' 2>/dev/null
+}
+
+# In-progress epics assigned to you, created by you, or linked from your issues.
+# Usage: _create_ticket_eligible_epics [project_key]
+_create_ticket_eligible_epics() {
+	_jira_validate_env || return 1
+
+	local project_key="${1:-CLSTR}"
+	local epic_link_field_id
+	epic_link_field_id=$(_jira_field_id "Epic Link") || return 0
+
+	local epic_link_field_num="${epic_link_field_id#customfield_}"
+	local assigned_epics_jql="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND (assignee = currentUser() OR creator = currentUser()) ORDER BY updated DESC"
+
+	local assigned_epics_response
+	assigned_epics_response=$(_jira_search "$assigned_epics_jql" 500 "key,summary,status,assignee,creator")
+
+	if printf '%s' "$assigned_epics_response" | jq -e '.errorMessages' >/dev/null 2>&1; then
+		assigned_epics_response='{"issues":[]}'
+	fi
+
+	local my_issues_with_epic_jql="project in (CLSTR, ENG) AND assignee = currentUser() AND statusCategory != Done AND cf[${epic_link_field_num}] IS NOT EMPTY ORDER BY updated DESC"
+	local my_issues_with_epic_response
+	my_issues_with_epic_response=$(_jira_search "$my_issues_with_epic_jql" 500 "key,summary,${epic_link_field_id}")
+
+	local related_epic_keys=()
+	while IFS= read -r key; do
+		[ -n "$key" ] && related_epic_keys+=("$key")
+	done < <(printf '%s' "$my_issues_with_epic_response" | jq -r --arg epic_field "$epic_link_field_id" '.issues[]?.fields[$epic_field] // empty' 2>/dev/null | sort -u)
+
+	local related_epics_response='{"issues":[]}'
+	if [ ${#related_epic_keys[@]} -gt 0 ]; then
+		local keys_csv=""
+		local key
+		for key in "${related_epic_keys[@]}"; do
+			keys_csv="${keys_csv}'${key}',"
+		done
+		keys_csv="${keys_csv%,}"
+
+		local related_epics_jql="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND key IN (${keys_csv}) ORDER BY updated DESC"
+		related_epics_response=$(_jira_search "$related_epics_jql" 500 "key,summary,status,assignee,creator")
+	fi
+
+	local merged_responses
+	merged_responses=$(jq -s '{issues: [.[0].issues[]?, .[1].issues[]?]}' \
+		<(printf '%s' "$assigned_epics_response") \
+		<(printf '%s' "$related_epics_response") 2>/dev/null)
+
+	printf '%s' "$merged_responses" | jq -r '
+    [(.issues[]? | {
+      key: .key,
+      status: (.fields.status.name // "N/A"),
+      assignee: (.fields.assignee.displayName // "Unassigned"),
+      summary: (.fields.summary // ""),
+      creator: (.fields.creator.displayName // "Unknown")
+    })] as $items
+    | reduce $items[] as $item ({}; .[$item.key] = $item)
+    | to_entries[]
+    | "\(.value.key)\t\(.value.status)\t\(.value.assignee)\t\(.value.summary)\t\(.value.creator)"
+  ' 2>/dev/null
+}
+
+_jira_common() {
+	:
+}

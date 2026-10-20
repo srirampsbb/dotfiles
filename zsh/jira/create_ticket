@@ -1,0 +1,824 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+# ------------------------------------------------------------------------------
+# Create Ticket
+# Create a new Jira issue under CLSTR or ENG with fuzzy selections.
+# Usage: create_ticket [PROJECT] <PRIORITY> <TYPE> <COMPONENT> <TITLE> <DESCRIPTION> [ASSIGNEE] [PRIMARY_COMPONENT] [EPIC]
+# Examples:
+#   create_ticket PROJECT "Priority Name" Bug "Component" "Fix login timeout" "Investigate and fix timeout in auth flow"
+#   create_ticket PROJECT "Priority Name" Task "Component" "DB failover bug" "Handle replica lag" jane.doe
+#   create_ticket PROJECT "Priority Name" Story "Component" "Improve dashboard UX" "Rework filters" jane.doe "" PROJECT-1234
+#   create_ticket --help
+# ------------------------------------------------------------------------------
+create_ticket() {
+	_jira_validate_env || return 1
+
+	if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+		cat <<'EOF'
+Usage:
+  create_ticket [PROJECT] <PRIORITY> <TYPE> <COMPONENT> <TITLE> <DESCRIPTION> [ASSIGNEE] [PRIMARY_COMPONENT] [EPIC]
+
+Arguments:
+  PROJECT      Optional. Selected from accessible Jira projects when omitted
+  PRIORITY     Required. Selected from priorities allowed for the project and issue type
+  TYPE         Required. Issue type (for example Task/Bug/Story/Epic)
+  COMPONENT    Required. Component name
+  TITLE        Required. Ticket summary
+  DESCRIPTION  Required. Ticket description
+  ASSIGNEE     Optional. Jira username. Defaults to current authenticated user
+  PRIMARY_COMPONENT  Required for ENG. The ENG Primary Component value. Prompted interactively if omitted
+  EPIC         Optional. Epic key (for example CLSTR-1234 or ENG-1234). Must be the last argument
+
+Interactive behavior:
+  - Running without arguments starts a guided interactive flow.
+  - PROJECT is selected via fuzzy picker when omitted or invalid.
+  - PRIORITY is selected via fuzzy picker when omitted or invalid.
+  - TYPE is validated against supported issue types for the selected PROJECT.
+  - If TYPE is invalid, a fuzzy picker is shown to choose from supported types.
+  - COMPONENT is validated against components for the selected PROJECT.
+  - If COMPONENT is invalid, a fuzzy picker is shown to choose from available components.
+  - TITLE is prompted when omitted.
+  - DESCRIPTION supports multiline input when omitted (finish with EOF or eof on a new line).
+   - ASSIGNEE defaults to the current user; use the interactive picker to change
+     the assignee to another user via a searchable dropdown, or leave unassigned.
+  - For non-Epic tickets, if EPIC is not supplied, you can optionally link an Epic.
+  - If linking is enabled, Epic candidates include:
+      * In-progress epics assigned to you
+      * In-progress epics where at least one linked issue is assigned to you
+      * Results are searched across both CLSTR and ENG projects
+  - Epic selection uses a fuzzy picker.
+  - For ENG tickets, required fields like Primary Component, Fix Version/s,
+    Impact, Regression?, and Affects Version/s are prompted automatically.
+
+Examples:
+  create_ticket PROJECT "Priority Name" Bug "Component" "Fix login timeout" "Investigate and fix timeout in auth flow"
+  create_ticket PROJECT "Priority Name" Task "Component" "DB failover bug" "Handle replica lag" jane.doe
+  create_ticket PROJECT "Priority Name" Story "Component" "Improve dashboard UX" "Rework filters" jane.doe "" PROJECT-1234
+EOF
+		return 0
+	fi
+
+	if ! command -v fzf >/dev/null 2>&1; then
+		echo "Error: fzf is required for fuzzy selection. Please install fzf and try again."
+		return 1
+	fi
+
+	local PROJECT_KEY_INPUT=""
+	[ -n "$1" ] && PROJECT_KEY_INPUT="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+	local PROJECT_KEY=""
+	local PRIORITY_INPUT=""
+	local PRIORITY_ID=""
+	local PRIORITY_NAME=""
+	local PRIORITY_OPTIONS=""
+	local ISSUE_TYPE_INPUT=""
+	local COMPONENT_NAME=""
+	local -a COMPONENT_NAMES=()
+	local SUMMARY=""
+	local DESCRIPTION=""
+	local ASSIGNEE=""
+	local EPIC_KEY_INPUT=""
+	local ISSUE_TYPE_NAME=""
+	local SELECTED_EPIC_KEY=""
+	local EPIC_LINK_FIELD_ID=""
+	local EXTRA_FIELDS_JSON='{}'
+
+	echo "Fetching available projects from ${JIRA_BASE_URL}..."
+	local PROJECT_ROWS
+	PROJECT_ROWS=$(_jira_list_projects) || {
+		echo "Error: Could not fetch projects from Jira."
+		return 1
+	}
+	if [ -z "$PROJECT_ROWS" ]; then
+		echo "Error: No accessible Jira projects were found."
+		return 1
+	fi
+
+	local PROJECT_SELECTION
+	PROJECT_SELECTION=$(printf '%s\n' "$PROJECT_ROWS" | _fzf_jira --prompt="Project > " --delimiter=$'\t' --with-nth=1,2)
+	if [ -z "$PROJECT_SELECTION" ]; then
+		echo "No project selected. Aborting."
+		return 1
+	fi
+	PROJECT_KEY="${PROJECT_SELECTION%%$'\t'*}"
+	shift $(($# > 0 ? 1 : 0))
+
+	PRIORITY_INPUT="$1"
+	ISSUE_TYPE_INPUT="$2"
+	COMPONENT_NAME="$3"
+	SUMMARY="$4"
+	DESCRIPTION="$5"
+	ASSIGNEE="$6"
+	local PRIMARY_COMPONENT="$7"
+	EPIC_KEY_INPUT="$(echo "$8" | tr '[:lower:]' '[:upper:]')"
+
+	# Guided mode: fill missing required values interactively.
+
+	# Fetch current authenticated user; assignee defaults to this
+	local CURRENT_USER
+	CURRENT_USER=$(_jira_current_user) || CURRENT_USER=""
+
+	# Assignee: defaults to current user; prompt to confirm/change
+	if [ -z "$ASSIGNEE" ]; then
+		ASSIGNEE="$CURRENT_USER"
+	else
+		local ASSIGNEE_MATCH
+		ASSIGNEE_MATCH=$(printf '%s' "$ASSIGNEE" | tr '[:lower:]' '[:upper:]')
+		if [[ "$ASSIGNEE_MATCH" == "NONE" || "$ASSIGNEE_MATCH" == "UNASSIGNED" ]]; then
+			ASSIGNEE=""
+		fi
+	fi
+
+	echo "Fetching supported issue types for $PROJECT_KEY..."
+	local ISSUE_TYPES_JSON
+	local PROJECT_JSON=""
+	local ISSUE_TYPE_ID=""
+	ISSUE_TYPES_JSON=$(_jira_api --quiet GET /rest/api/2/issue/createmeta \
+		--data-urlencode "projectKeys=$PROJECT_KEY" \
+		--data-urlencode "expand=projects.issuetypes")
+
+	local ISSUE_TYPE_LIST=()
+	while IFS= read -r line; do
+		[ -n "$line" ] && ISSUE_TYPE_LIST+=("$line")
+	done < <(printf '%s' "$ISSUE_TYPES_JSON" | jq -r '.projects[0].issuetypes[]? | select(.subtask != true) | .name' 2>/dev/null)
+
+	if [ ${#ISSUE_TYPE_LIST[@]} -eq 0 ]; then
+		PROJECT_JSON=$(_jira_api --quiet GET "/rest/api/2/project/$PROJECT_KEY")
+
+		while IFS= read -r line; do
+			[ -n "$line" ] && ISSUE_TYPE_LIST+=("$line")
+		done < <(printf '%s' "$PROJECT_JSON" | jq -r '.issueTypes[]? | select(.subtask != true) | .name' 2>/dev/null)
+
+		if [ ${#ISSUE_TYPE_LIST[@]} -eq 0 ]; then
+			local CREATE_META_ERROR
+			local PROJECT_ERROR
+			CREATE_META_ERROR=$(printf '%s' "$ISSUE_TYPES_JSON" | jq -r '.errorMessages[]? // empty' 2>/dev/null | paste -sd '; ' -)
+			PROJECT_ERROR=$(printf '%s' "$PROJECT_JSON" | jq -r '.errorMessages[]? // empty' 2>/dev/null | paste -sd '; ' -)
+
+			echo "Error: Could not fetch supported issue types for $PROJECT_KEY."
+			if [ -n "$CREATE_META_ERROR" ]; then
+				echo "createmeta error: $CREATE_META_ERROR"
+			fi
+			if [ -n "$PROJECT_ERROR" ]; then
+				echo "project API error: $PROJECT_ERROR"
+			fi
+			echo "Check JIRA_TOKEN validity and Jira project permissions for $PROJECT_KEY."
+			return 1
+		fi
+	fi
+
+	ISSUE_TYPE_NAME=$(printf '%s\n' "${ISSUE_TYPE_LIST[@]}" | awk -v input="$ISSUE_TYPE_INPUT" 'tolower($0) == tolower(input) { print; exit }')
+	if [ -z "$ISSUE_TYPE_NAME" ]; then
+		if [ -n "$ISSUE_TYPE_INPUT" ]; then
+			echo "Provided type '$ISSUE_TYPE_INPUT' is not supported. Pick one from the fuzzy list."
+		fi
+		ISSUE_TYPE_NAME=$(printf '%s\n' "${ISSUE_TYPE_LIST[@]}" | _fzf_jira --prompt="Ticket Type > ")
+		if [ -z "$ISSUE_TYPE_NAME" ]; then
+			echo "No ticket type selected. Aborting."
+			return 1
+		fi
+	fi
+
+	ISSUE_TYPE_ID=$(printf '%s' "$ISSUE_TYPES_JSON" | jq -r --arg issue_type_name "$ISSUE_TYPE_NAME" '
+    .projects[0].issuetypes[]?
+    | select((.name // "" | ascii_downcase) == ($issue_type_name | ascii_downcase))
+    | .id
+  ' 2>/dev/null | head -n 1)
+
+	if [ -z "$ISSUE_TYPE_ID" ]; then
+		if [ -z "$PROJECT_JSON" ]; then
+			PROJECT_JSON=$(_jira_api --quiet GET "/rest/api/2/project/$PROJECT_KEY")
+		fi
+		ISSUE_TYPE_ID=$(printf '%s' "$PROJECT_JSON" | jq -r --arg issue_type_name "$ISSUE_TYPE_NAME" '
+      .issueTypes[]?
+      | select((.name // "" | ascii_downcase) == ($issue_type_name | ascii_downcase))
+      | .id
+    ' 2>/dev/null | head -n 1)
+	fi
+
+	if [ -z "$ISSUE_TYPE_ID" ] || [ "$ISSUE_TYPE_ID" = "null" ]; then
+		echo "Error: Could not resolve the Jira issue type ID for '$ISSUE_TYPE_NAME'."
+		return 1
+	fi
+
+	echo "Fetching priorities for $PROJECT_KEY / $ISSUE_TYPE_NAME..."
+	PRIORITY_OPTIONS=$(_jira_api --fail --quiet GET "/rest/api/2/issue/createmeta/$PROJECT_KEY/issuetypes/$ISSUE_TYPE_ID" |
+		jq -r '.values[]? | select(.fieldId == "priority") | .allowedValues[]? | [(.id // ""), (.name // "")] | @tsv' 2>/dev/null) || {
+		echo "Error: Could not fetch priorities for $PROJECT_KEY / $ISSUE_TYPE_NAME."
+		return 1
+	}
+	if [ -z "$PRIORITY_OPTIONS" ]; then
+		echo "Error: No priorities are allowed for $PROJECT_KEY / $ISSUE_TYPE_NAME."
+		return 1
+	fi
+
+	local PRIORITY_SELECTION
+	if [ -n "$PRIORITY_INPUT" ]; then
+		PRIORITY_SELECTION=$(printf '%s\n' "$PRIORITY_OPTIONS" | awk -F '\t' -v input="$PRIORITY_INPUT" '
+      tolower($1) == tolower(input) || tolower($2) == tolower(input) { print; exit }
+    ')
+	fi
+	if [ -z "$PRIORITY_SELECTION" ]; then
+		if [ -n "$PRIORITY_INPUT" ]; then
+			echo "Provided priority '$PRIORITY_INPUT' is not allowed for $PROJECT_KEY / $ISSUE_TYPE_NAME. Pick one from the fuzzy list."
+		fi
+		PRIORITY_SELECTION=$(printf '%s\n' "$PRIORITY_OPTIONS" | _fzf_jira --prompt="Priority > " --delimiter=$'\t' --with-nth=2)
+		if [ -z "$PRIORITY_SELECTION" ]; then
+			echo "No priority selected. Aborting."
+			return 1
+		fi
+	fi
+	PRIORITY_ID="${PRIORITY_SELECTION%%$'\t'*}"
+	PRIORITY_NAME="${PRIORITY_SELECTION#*$'\t'}"
+
+	echo "Fetching available components for $PROJECT_KEY..."
+	local COMPONENTS_JSON COMPONENT
+	COMPONENTS_JSON=$(_jira_api --quiet GET "/rest/api/2/project/$PROJECT_KEY/components")
+
+	local COMPONENT_LIST=()
+	while IFS= read -r line; do
+		[ -n "$line" ] && COMPONENT_LIST+=("$line")
+	done < <(printf '%s' "$COMPONENTS_JSON" | jq -r '.[].name' 2>/dev/null)
+
+	if [ ${#COMPONENT_LIST[@]} -eq 0 ]; then
+		echo "Error: No components found for project $PROJECT_KEY."
+		return 1
+	fi
+
+	if [ -n "$COMPONENT_NAME" ]; then
+		local MATCHED_COMPONENT
+		MATCHED_COMPONENT=$(printf '%s\n' "${COMPONENT_LIST[@]}" | awk -v input="$COMPONENT_NAME" 'tolower($0) == tolower(input) { print; exit }')
+		if [ -n "$MATCHED_COMPONENT" ]; then
+			COMPONENT_NAMES+=("$MATCHED_COMPONENT")
+		else
+			echo "Provided component '$COMPONENT_NAME' not found. Pick one from the fuzzy list."
+		fi
+	fi
+
+	while true; do
+		local AVAILABLE_COMPONENTS=""
+		for COMPONENT in "${COMPONENT_LIST[@]}"; do
+			if ((${COMPONENT_NAMES[(Ie)$COMPONENT]} == 0)); then
+				AVAILABLE_COMPONENTS+="$COMPONENT\n"
+			fi
+		done
+		if [ -z "$AVAILABLE_COMPONENTS" ]; then
+			break
+		fi
+
+		if [ ${#COMPONENT_NAMES[@]} -gt 0 ]; then
+			local ADD_COMPONENT_CHOICE
+			ADD_COMPONENT_CHOICE=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another component? > ")
+			[ "$ADD_COMPONENT_CHOICE" != "Yes" ] && break
+		fi
+
+		local SELECTED_COMPONENT
+		SELECTED_COMPONENT=$(printf '%b' "$AVAILABLE_COMPONENTS" | _fzf_jira --prompt="Component > ")
+		if [ -z "$SELECTED_COMPONENT" ]; then
+			echo "No component selected. Aborting."
+			return 1
+		fi
+		COMPONENT_NAMES+=("$SELECTED_COMPONENT")
+	done
+
+	if [ ${#COMPONENT_NAMES[@]} -eq 0 ]; then
+		echo "At least one component is required. Aborting."
+		return 1
+	fi
+	COMPONENT_NAME="${(j:, :)COMPONENT_NAMES}"
+
+	if [ -z "$SUMMARY" ]; then
+		echo -n "Title > "
+		read -r SUMMARY
+		if [ -z "$SUMMARY" ]; then
+			echo "Title is required. Aborting."
+			return 1
+		fi
+	fi
+
+	if [ -z "$DESCRIPTION" ]; then
+		local -a DESCRIPTION_LINES=()
+		local DESCRIPTION_LINE=""
+		echo "Description > (multiline; type EOF or eof on a new line to finish)"
+		while true; do
+			IFS= read -r DESCRIPTION_LINE
+			if [[ "${DESCRIPTION_LINE:l}" == "eof" ]]; then
+				break
+			fi
+			DESCRIPTION_LINES+=("$DESCRIPTION_LINE")
+		done
+		DESCRIPTION="${(j:\n:)DESCRIPTION_LINES}"
+		if [ -z "$DESCRIPTION" ]; then
+			echo "Description is required. Aborting."
+			return 1
+		fi
+	fi
+
+	if [ "$PROJECT_KEY" = "ENG" ] && [ -z "$PRIMARY_COMPONENT" ]; then
+		if [ ${#COMPONENT_LIST[@]} -gt 0 ]; then
+			PRIMARY_COMPONENT=$(printf '%s\n' "${COMPONENT_LIST[@]}" | _fzf_jira --prompt="Primary Component > ")
+		else
+			echo -n "Primary Component (ENG required) > "
+			read -r PRIMARY_COMPONENT
+		fi
+		if [ -z "$PRIMARY_COMPONENT" ]; then
+			echo "Primary Component is required for ENG tickets. Aborting."
+			return 1
+		fi
+	fi
+
+	# Assignee prompt: show dropdown with current default, allow picking another user or unassigning
+	local ASSIGNEE_CHOICE
+	if [ -z "$ASSIGNEE" ]; then
+		ASSIGNEE_CHOICE=$(printf "Set Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
+	else
+		ASSIGNEE_CHOICE=$(printf "Keep [$ASSIGNEE]\nChange Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
+	fi
+	if [ "$ASSIGNEE_CHOICE" = "Change Assignee" ] || [ "$ASSIGNEE_CHOICE" = "Set Assignee" ]; then
+		local _assignee_query _assignee_rows _selected _picked
+		echo -n "Assignee search > "
+		read -r _assignee_query
+		if [ ${#_assignee_query} -lt 2 ]; then
+			echo "Type at least 2 characters to search assignees."
+		else
+			echo "Searching assignees in ${PROJECT_KEY}..."
+			_assignee_rows=$(_jira_assignable_users "$_assignee_query" "$PROJECT_KEY")
+			if [ -z "$_assignee_rows" ]; then
+				echo "No assignable users found for '${_assignee_query}'."
+			else
+				_selected=$(printf '%s\n' "$_assignee_rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
+				_picked=$(printf '%s' "$_selected" | cut -f1)
+				if [ -n "$_picked" ]; then
+					ASSIGNEE="$_picked"
+				fi
+			fi
+		fi
+	elif [ "$ASSIGNEE_CHOICE" = "Unassign" ]; then
+		ASSIGNEE=""
+	fi
+
+	if [[ "${ISSUE_TYPE_NAME:l}" != "epic" && -n "$EPIC_KEY_INPUT" ]]; then
+		SELECTED_EPIC_KEY="$EPIC_KEY_INPUT"
+	fi
+
+	if [[ "${ISSUE_TYPE_NAME:l}" != "epic" && -z "$SELECTED_EPIC_KEY" ]]; then
+		local LINK_EPIC_CHOICE
+		LINK_EPIC_CHOICE=$(printf "No\nYes\n" | _fzf_jira --prompt="Link to an in-progress epic? > ")
+
+		if [ "$LINK_EPIC_CHOICE" = "Yes" ]; then
+			echo "Fetching Epic Link field metadata..."
+			EPIC_LINK_FIELD_ID=$(_jira_field_id "Epic Link") || EPIC_LINK_FIELD_ID=""
+
+			if [ -z "$EPIC_LINK_FIELD_ID" ] || [ "$EPIC_LINK_FIELD_ID" = "null" ]; then
+				echo "Could not locate the 'Epic Link' field. Skipping epic linking."
+			else
+				local EPIC_LINK_FIELD_NUM="${EPIC_LINK_FIELD_ID#customfield_}"
+				local ASSIGNED_EPICS_JQL="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND assignee = currentUser() ORDER BY updated DESC"
+				local ASSIGNED_EPICS_RESPONSE
+				ASSIGNED_EPICS_RESPONSE=$(_jira_search "$ASSIGNED_EPICS_JQL" 500 "key,summary,status,assignee")
+
+				if printf '%s' "$ASSIGNED_EPICS_RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+					local _epic_err
+					_epic_err=$(printf '%s' "$ASSIGNED_EPICS_RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null | head -n 1)
+					echo "Warning: Epic search query returned error: $_epic_err"
+					ASSIGNED_EPICS_RESPONSE='{"issues":[]}'
+				fi
+
+				local MY_ISSUES_WITH_EPIC_JQL="project in (CLSTR, ENG) AND assignee = currentUser() AND statusCategory != Done AND cf[${EPIC_LINK_FIELD_NUM}] IS NOT EMPTY ORDER BY updated DESC"
+				local MY_ISSUES_WITH_EPIC_RESPONSE
+				MY_ISSUES_WITH_EPIC_RESPONSE=$(_jira_search "$MY_ISSUES_WITH_EPIC_JQL" 500 "key,summary,${EPIC_LINK_FIELD_ID}")
+
+				if printf '%s' "$MY_ISSUES_WITH_EPIC_RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+					local _epic_err2
+					_epic_err2=$(printf '%s' "$MY_ISSUES_WITH_EPIC_RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null | head -n 1)
+					echo "Warning: Epic-related issues query returned error: $_epic_err2"
+					MY_ISSUES_WITH_EPIC_RESPONSE='{"issues":[]}'
+				fi
+
+				local RELATED_EPIC_KEYS=()
+				while IFS= read -r key; do
+					[ -n "$key" ] && RELATED_EPIC_KEYS+=("$key")
+				done < <(printf '%s' "$MY_ISSUES_WITH_EPIC_RESPONSE" | jq -r --arg epic_field "$EPIC_LINK_FIELD_ID" '.issues[]?.fields[$epic_field] // empty' 2>/dev/null | sort -u)
+
+				local RELATED_EPICS_RESPONSE='{"issues":[]}'
+				if [ ${#RELATED_EPIC_KEYS[@]} -gt 0 ]; then
+					local KEYS_CSV=""
+					local key
+					for key in "${RELATED_EPIC_KEYS[@]}"; do
+						KEYS_CSV="${KEYS_CSV}'${key}',"
+					done
+					KEYS_CSV="${KEYS_CSV%,}"
+
+					local RELATED_EPICS_JQL="project in (CLSTR, ENG) AND issuetype = Epic AND statusCategory != Done AND key IN (${KEYS_CSV}) ORDER BY updated DESC"
+					RELATED_EPICS_RESPONSE=$(_jira_search "$RELATED_EPICS_JQL" 500 "key,summary,status,assignee")
+
+					if printf '%s' "$RELATED_EPICS_RESPONSE" | jq -e '.errorMessages' >/dev/null 2>&1; then
+						local _epic_err3
+						_epic_err3=$(printf '%s' "$RELATED_EPICS_RESPONSE" | jq -r '.errorMessages[]' 2>/dev/null | head -n 1)
+						echo "Warning: Related epics query returned error: $_epic_err3"
+						RELATED_EPICS_RESPONSE='{"issues":[]}'
+					fi
+				fi
+
+				local MERGED_EPIC_RESPONSES
+				MERGED_EPIC_RESPONSES=$(jq -s '{issues: [.[0].issues[]?, .[1].issues[]?]}' \
+					<(printf '%s' "$ASSIGNED_EPICS_RESPONSE") \
+					<(printf '%s' "$RELATED_EPICS_RESPONSE") 2>/dev/null)
+
+				if [ -z "$MERGED_EPIC_RESPONSES" ] || ! printf '%s' "$MERGED_EPIC_RESPONSES" | jq -e '.issues | type == "array"' >/dev/null 2>&1; then
+					echo "Warning: Failed to merge epic responses. Using assigned epics only."
+					MERGED_EPIC_RESPONSES="$ASSIGNED_EPICS_RESPONSE"
+				fi
+
+				local EPIC_PICK_LIST_RAW
+				EPIC_PICK_LIST_RAW=$(printf '%s' "$MERGED_EPIC_RESPONSES" | jq -r '
+          [(.issues[]? | {
+              key: .key,
+              summary: (.fields.summary // ""),
+              assignee: (.fields.assignee.displayName // "Unassigned")
+            })] as $items
+          | reduce $items[] as $item ({}; .[$item.key] = $item)
+          | to_entries[]
+          | "\(.value.key)\t\(.value.summary)\t\(.value.assignee)"
+        ' 2>/dev/null | sort)
+
+				if [ -z "$EPIC_PICK_LIST_RAW" ]; then
+					echo "No eligible in-progress epics found for linking."
+				else
+					local SELECTED_EPIC_LINE
+					SELECTED_EPIC_LINE=$(printf '%s\n' "$EPIC_PICK_LIST_RAW" | _fzf_jira --prompt="Epic > " --with-nth=2,3 --delimiter=$'\t')
+					if [ -n "$SELECTED_EPIC_LINE" ]; then
+						SELECTED_EPIC_KEY=$(printf '%s' "$SELECTED_EPIC_LINE" | cut -f1)
+					fi
+				fi
+			fi
+		fi
+	fi
+
+	if [[ -n "$SELECTED_EPIC_KEY" && -z "$EPIC_LINK_FIELD_ID" ]]; then
+		EPIC_LINK_FIELD_ID=$(_jira_field_id "Epic Link") || EPIC_LINK_FIELD_ID=""
+		if [ -z "$EPIC_LINK_FIELD_ID" ] || [ "$EPIC_LINK_FIELD_ID" = "null" ]; then
+			echo "Could not locate the 'Epic Link' field. Skipping epic linking."
+			SELECTED_EPIC_KEY=""
+		fi
+	fi
+
+	if [ "$PROJECT_KEY" = "ENG" ]; then
+		EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg val "$PRIMARY_COMPONENT" '. + {"customfield_15160": {"value": $val}}')
+	fi
+
+	local FIX_VERSION_OPTIONS FIX_VERSION_SELECTION FIX_VERSION_ID FIX_VERSION_NAME
+	local -a CREATE_FIX_VERSION_IDS CREATE_FIX_VERSION_NAMES
+	FIX_VERSION_OPTIONS=$(_jira_api --quiet GET "/rest/api/2/project/$PROJECT_KEY/versions" |
+		jq -r '.[]? | select(.archived != true) | [(.id // ""), (.name // "Unknown")] | @tsv' 2>/dev/null)
+	if [ -z "$FIX_VERSION_OPTIONS" ]; then
+		echo "No selectable Fix Version/s found for $PROJECT_KEY."
+		return 1
+	fi
+
+	CREATE_FIX_VERSION_IDS=()
+	CREATE_FIX_VERSION_NAMES=()
+	while true; do
+		local CREATE_AVAILABLE_VERSIONS=""
+		while IFS=$'\t' read -r FIX_VERSION_ID FIX_VERSION_NAME; do
+			[ -z "$FIX_VERSION_ID" ] && continue
+			if ((${CREATE_FIX_VERSION_IDS[(Ie)$FIX_VERSION_ID]} == 0)); then
+				CREATE_AVAILABLE_VERSIONS+="${FIX_VERSION_ID}\t${FIX_VERSION_NAME}\n"
+			fi
+		done <<<"$FIX_VERSION_OPTIONS"
+
+		if [ -z "$CREATE_AVAILABLE_VERSIONS" ]; then
+			echo "All available Fix Version/s have been selected."
+			break
+		fi
+
+		FIX_VERSION_SELECTION=$(printf '%b' "$CREATE_AVAILABLE_VERSIONS" | _fzf_jira --prompt="Fix Version/s > " --delimiter=$'\t' --with-nth=2)
+		if [ -z "$FIX_VERSION_SELECTION" ]; then
+			echo "Fix Version/s selection is required. Aborting."
+			return 1
+		fi
+
+		FIX_VERSION_ID="${FIX_VERSION_SELECTION%%$'\t'*}"
+		FIX_VERSION_NAME="${FIX_VERSION_SELECTION#*$'\t'}"
+		CREATE_FIX_VERSION_IDS+=("$FIX_VERSION_ID")
+		CREATE_FIX_VERSION_NAMES+=("$FIX_VERSION_NAME")
+
+		local ADD_CREATE_FIX_VERSION
+		ADD_CREATE_FIX_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
+		[ "$ADD_CREATE_FIX_VERSION" != "Yes" ] && break
+	done
+
+	local CREATE_FIX_VERSIONS_PAYLOAD='[]'
+	local CREATE_FIX_VERSION_ID
+	for CREATE_FIX_VERSION_ID in "${CREATE_FIX_VERSION_IDS[@]}"; do
+		CREATE_FIX_VERSIONS_PAYLOAD=$(printf '%s' "$CREATE_FIX_VERSIONS_PAYLOAD" | jq --arg id "$CREATE_FIX_VERSION_ID" '. + [{id: $id}]')
+	done
+	EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --argjson fix_versions "$CREATE_FIX_VERSIONS_PAYLOAD" '. + {fixVersions: $fix_versions}')
+
+	echo "Fetching required fields for $ISSUE_TYPE_NAME in $PROJECT_KEY..."
+
+	local ISSUETYPE_FIELDS_JSON=""
+
+	if [ -n "$ISSUE_TYPE_ID" ]; then
+		ISSUETYPE_FIELDS_JSON=$(_jira_api --quiet GET "/rest/api/2/issue/createmeta/$PROJECT_KEY/issuetypes/$ISSUE_TYPE_ID")
+
+		if ! printf '%s' "$ISSUETYPE_FIELDS_JSON" | jq -e '.values' >/dev/null 2>&1; then
+			ISSUETYPE_FIELDS_JSON=""
+		fi
+	fi
+
+	if [ -z "$ISSUETYPE_FIELDS_JSON" ]; then
+		local ISSUETYPE_CREATE_META_JSON
+		ISSUETYPE_CREATE_META_JSON=$(_jira_api --quiet GET /rest/api/2/issue/createmeta \
+			--data-urlencode "projectKeys=$PROJECT_KEY" \
+			--data-urlencode "expand=projects.issuetypes.fields")
+
+		if printf '%s' "$ISSUETYPE_CREATE_META_JSON" | jq -e '.projects[0].issuetypes' >/dev/null 2>&1; then
+			ISSUETYPE_FIELDS_JSON=$(printf '%s' "$ISSUETYPE_CREATE_META_JSON" | jq -c \
+				--arg issue_type_id "$ISSUE_TYPE_ID" \
+				--arg issue_type_name "$ISSUE_TYPE_NAME" '
+        {values: (
+          .projects[0].issuetypes[]?
+          | select(
+              if ($issue_type_id | length) > 0
+              then .id == $issue_type_id
+              else ((.name // "" | ascii_downcase) == ($issue_type_name | ascii_downcase))
+              end
+            )
+          | [.fields | to_entries[] | {fieldId: .key, required: .value.required, name: .value.name, schema: .value.schema, allowedValues: .value.allowedValues}]
+        )}' 2>/dev/null | head -n 1)
+		fi
+	fi
+
+	_field_helper() {
+		local fid="$1" json="$2" attr="$3"
+		printf '%s' "$json" | jq -r --arg fid "$fid" --arg attr "$attr" '
+      (.values[]? | select(.fieldId == $fid))
+      | if $attr == "required" then (.required // false | tostring)
+        elif $attr == "name" then (.name // $fid)
+        elif $attr == "schema_type" then (.schema.type // "")
+        elif $attr == "schema_items" then (.schema.items // "")
+        elif $attr == "options" then (
+          .allowedValues[]?
+          | [(.id // ""), (.name // .value // .key // "Unknown")]
+          | @tsv
+        )
+        else ""
+        end
+    ' 2>/dev/null
+	}
+
+	local REQUIRED_FIELD_IDS
+	if [ -n "$ISSUETYPE_FIELDS_JSON" ]; then
+		REQUIRED_FIELD_IDS=$(printf '%s' "$ISSUETYPE_FIELDS_JSON" | jq -r '
+      .values[]?
+      | select(.required == true)
+      | .fieldId
+      | select(IN(.; "project", "summary", "description", "priority", "assignee", "components", "issuetype") | not)
+    ' 2>/dev/null)
+	fi
+
+	local FIELD_ID FIELD_LABEL FIELD_TYPE FIELD_ITEMS
+	local FIELD_OPTIONS SELECTED_OPTION SELECTED_ID SELECTED_VALUE MANUAL_VALUE
+
+	for FIELD_ID in ${(f)REQUIRED_FIELD_IDS}; do
+		[ -z "$FIELD_ID" ] && continue
+
+		if [ "$FIELD_ID" = "reporter" ]; then
+			if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "null" ]; then
+				echo "Could not resolve the current user for Reporter. Aborting."
+				return 1
+			fi
+			EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg val "$CURRENT_USER" '. + {reporter: {"name": $val}}')
+			continue
+		fi
+
+		printf '%s' "$EXTRA_FIELDS_JSON" | jq -e --arg fid "$FIELD_ID" 'has($fid)' >/dev/null 2>&1 && continue
+
+		FIELD_LABEL=$(_field_helper "$FIELD_ID" "$ISSUETYPE_FIELDS_JSON" "name")
+		FIELD_TYPE=$(_field_helper "$FIELD_ID" "$ISSUETYPE_FIELDS_JSON" "schema_type")
+		FIELD_ITEMS=$(_field_helper "$FIELD_ID" "$ISSUETYPE_FIELDS_JSON" "schema_items")
+		[ "$FIELD_ITEMS" = "$FIELD_TYPE" ] && FIELD_ITEMS=""
+		FIELD_OPTIONS=$(_field_helper "$FIELD_ID" "$ISSUETYPE_FIELDS_JSON" "options")
+
+		if [ -z "$FIELD_OPTIONS" ]; then
+			if [[ "$FIELD_ID" = "versions" || "$FIELD_ID" = "fixVersions" ]]; then
+				FIELD_OPTIONS=$(_jira_api --quiet GET "/rest/api/2/project/$PROJECT_KEY/versions" |
+					jq -r '.[]? | select(.archived != true) | [(.id // ""), (.name // "Unknown")] | @tsv' 2>/dev/null)
+			elif [[ "$FIELD_TYPE" = "user" || "$FIELD_ITEMS" = "user" ]]; then
+				local _user_field_name="$FIELD_ID"
+				if [[ "$FIELD_ID" = customfield_* ]]; then
+					_user_field_name="cf[${FIELD_ID#customfield_}]"
+				fi
+				local _user_suggest_json
+				_user_suggest_json=$(_jira_api --quiet GET /rest/api/2/jql/autocompletedata/suggestions \
+					--data-urlencode "fieldName=${_user_field_name}" \
+					--data-urlencode "fieldValue=")
+				FIELD_OPTIONS=$(printf '%s' "$_user_suggest_json" | jq -r '.results[]? | [(.accountId // .name // ""), (.displayName // .name // "Unknown")] | @tsv' 2>/dev/null)
+			elif [[ "$FIELD_ID" = customfield_* ]]; then
+				local _cf_num="${FIELD_ID#customfield_}"
+				local _cf_suggest_json
+				_cf_suggest_json=$(_jira_api --quiet GET /rest/api/2/jql/autocompletedata/suggestions \
+					--data-urlencode "fieldName=cf[${_cf_num}]" \
+					--data-urlencode "fieldValue=")
+				FIELD_OPTIONS=$(printf '%s' "$_cf_suggest_json" | jq -r '
+          .results[]? | [(""), (.displayName // .value // "Unknown")] | @tsv
+        ' 2>/dev/null)
+			fi
+		fi
+
+		if [ -n "$FIELD_OPTIONS" ]; then
+			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | _fzf_jira --prompt="${FIELD_LABEL} > " --with-nth=2)
+			if [ -z "$SELECTED_OPTION" ]; then
+				echo "No value selected for '${FIELD_LABEL}'. Aborting."
+				return 1
+			fi
+
+			SELECTED_ID="${SELECTED_OPTION%%$'\t'*}"
+			SELECTED_VALUE="${SELECTED_OPTION#*$'\t'}"
+
+			if [[ "$FIELD_TYPE" = "user" || "$FIELD_ITEMS" = "user" ]]; then
+				local _user_name="$SELECTED_ID"
+				[ -z "$_user_name" ] && _user_name="$SELECTED_VALUE"
+				if [ "$FIELD_TYPE" = "array" ]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$_user_name" '. + {($fid): [{"name": $val}]}')
+				else
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$_user_name" '. + {($fid): {"name": $val}}')
+				fi
+			elif [[ "$FIELD_ID" = customfield_* && "$FIELD_TYPE" = "string" ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): $val}')
+			elif [[ "$FIELD_ID" = customfield_* && "$FIELD_TYPE" != "array" ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): {"value": $val}}')
+			elif [[ "$FIELD_ID" = customfield_* && "$FIELD_TYPE" = "array" ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): [{"value": $val}]}')
+			elif [ "$FIELD_TYPE" = "array" ]; then
+				if [[ "$FIELD_ITEMS" = "option" ]]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): [{"name": $val}]}')
+				elif [ -n "$SELECTED_ID" ]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_ID" '. + {($fid): [{"id": $val}]}')
+				elif [[ "$FIELD_ITEMS" = "version" || "$FIELD_ITEMS" = "component" ]]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): [{"name": $val}]}')
+				else
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): [$val]}')
+				fi
+			elif [ "$FIELD_TYPE" = "option" ]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): {"name": $val}}')
+			elif [[ "$FIELD_TYPE" = "version" || "$FIELD_TYPE" = "component" ]]; then
+				if [ -n "$SELECTED_ID" ]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_ID" '. + {($fid): {"id": $val}}')
+				else
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): {"name": $val}}')
+				fi
+			else
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$SELECTED_VALUE" '. + {($fid): $val}')
+			fi
+		else
+			echo -n "${FIELD_LABEL} > "
+			read -r MANUAL_VALUE
+			if [ -z "$MANUAL_VALUE" ]; then
+				echo "Value required for '${FIELD_LABEL}'. Aborting."
+				return 1
+			fi
+
+			if [[ "$FIELD_TYPE" = "user" || "$FIELD_ITEMS" = "user" ]]; then
+				if [ "$FIELD_TYPE" = "array" ]; then
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): [{"name": $val}]}')
+				else
+					EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): {"name": $val}}')
+				fi
+			elif [[ "$FIELD_ID" = customfield_* && "$FIELD_TYPE" = "string" ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): $val}')
+			elif [[ "$FIELD_ID" = customfield_* ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): {"value": $val}}')
+			elif [ "$FIELD_TYPE" = "array" ]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): [{"name": $val}]}')
+			elif [ "$FIELD_TYPE" = "option" ]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): {"name": $val}}')
+			elif [[ "$FIELD_TYPE" = "version" || "$FIELD_TYPE" = "component" ]]; then
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): {"name": $val}}')
+			else
+				EXTRA_FIELDS_JSON=$(printf '%s' "$EXTRA_FIELDS_JSON" | jq --arg fid "$FIELD_ID" --arg val "$MANUAL_VALUE" '. + {($fid): $val}')
+			fi
+		fi
+	done
+
+	echo "================================================================================"
+	echo "Review ticket details"
+	echo "================================================================================"
+	echo "Project:      $PROJECT_KEY"
+	echo "Priority:     $PRIORITY_INPUT ($PRIORITY_NAME)"
+	echo "Type:         $ISSUE_TYPE_NAME"
+	echo "Component:    $COMPONENT_NAME"
+	echo "Assignee:     $ASSIGNEE"
+	echo "Reporter:     $CURRENT_USER"
+	if [ "$PROJECT_KEY" = "ENG" ]; then
+		echo "Primary Comp: $PRIMARY_COMPONENT"
+	fi
+	if [ -n "$SELECTED_EPIC_KEY" ]; then
+		echo "Epic Link:    $SELECTED_EPIC_KEY"
+	else
+		echo "Epic Link:    (none)"
+	fi
+	echo "Title:        $SUMMARY"
+	echo "Description:"
+	printf '%s\n' "$DESCRIPTION"
+	if [ "$PROJECT_KEY" = "ENG" ] && [ "$EXTRA_FIELDS_JSON" != "{}" ]; then
+		echo "--------------------------------------------------------------------------------"
+		echo "ENG Required Fields:"
+		printf '%s' "$EXTRA_FIELDS_JSON" | jq .
+	fi
+	echo "--------------------------------------------------------------------------------"
+	echo "Full Payload Preview:"
+	jq -n \
+		--arg project "$PROJECT_KEY" \
+		--arg reporter "$CURRENT_USER" \
+		--arg summary "$SUMMARY" \
+		--arg description "$DESCRIPTION" \
+		--arg priority_id "$PRIORITY_ID" \
+		--arg assignee "$ASSIGNEE" \
+		--argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
+		--arg issue_type "$ISSUE_TYPE_NAME" \
+		--argjson extra_fields "$EXTRA_FIELDS_JSON" \
+		--arg epic_field "$EPIC_LINK_FIELD_ID" \
+		--arg epic_key "$SELECTED_EPIC_KEY" '
+      {
+        fields: {
+          project: { key: $project },
+          summary: $summary,
+          description: $description,
+          priority: { id: $priority_id },
+          assignee: { name: $assignee },
+          components: ($components | map({name: .})),
+          issuetype: { name: $issue_type }
+        }
+      }
+      | .fields += $extra_fields
+      | if (($epic_key | length) > 0 and ($epic_field | length) > 0)
+        then .fields += { ($epic_field): $epic_key }
+        else .
+        end
+    '
+	echo "================================================================================"
+
+	local CREATE_CONFIRMATION
+	CREATE_CONFIRMATION=$(printf "Create ticket\nCancel\n" | _fzf_jira --prompt="Confirm > ")
+	if [ "$CREATE_CONFIRMATION" != "Create ticket" ]; then
+		echo "Ticket creation cancelled."
+		return 1
+	fi
+
+	echo -e "\nCreating $ISSUE_TYPE_NAME ticket: $PRIORITY_INPUT ($PRIORITY_NAME) in $PROJECT_KEY (Component: $COMPONENT_NAME) assigned to $ASSIGNEE..."
+
+	local PAYLOAD
+	PAYLOAD=$(jq -n \
+		--arg project "$PROJECT_KEY" \
+		--arg summary "$SUMMARY" \
+		--arg description "$DESCRIPTION" \
+		--arg priority_id "$PRIORITY_ID" \
+		--arg assignee "$ASSIGNEE" \
+		--argjson components "$(printf '%s\n' "${COMPONENT_NAMES[@]}" | jq -R . | jq -s .)" \
+		--arg issue_type "$ISSUE_TYPE_NAME" \
+		--argjson extra_fields "$EXTRA_FIELDS_JSON" \
+		--arg epic_field "$EPIC_LINK_FIELD_ID" \
+		--arg epic_key "$SELECTED_EPIC_KEY" '
+      {
+        fields: {
+          project: { key: $project },
+          summary: $summary,
+          description: $description,
+          priority: { id: $priority_id },
+          assignee: { name: $assignee },
+          components: ($components | map({name: .})),
+          issuetype: { name: $issue_type }
+        }
+      }
+      | .fields += $extra_fields
+      | if (($epic_key | length) > 0 and ($epic_field | length) > 0)
+        then .fields += { ($epic_field): $epic_key }
+        else .
+        end
+    ')
+
+	# Post issue payload to Jira REST API
+	local RESPONSE
+	RESPONSE=$(_jira_api POST /rest/api/2/issue \
+		-H "Content-Type: application/json" \
+		--data "$PAYLOAD")
+
+	local KEY
+	KEY=$(printf '%s' "$RESPONSE" | jq -r '.key // empty' 2>/dev/null)
+
+	if [ -n "$KEY" ]; then
+		echo "Successfully created ticket: ${JIRA_BASE_URL}/browse/$KEY"
+		if [ -n "$SELECTED_EPIC_KEY" ]; then
+			echo "Linked to epic: $SELECTED_EPIC_KEY"
+		fi
+	else
+		echo "Failed to create ticket. Error details:"
+		printf '%s' "$RESPONSE" | jq .
+	fi
+}
+create_ticket "$@"

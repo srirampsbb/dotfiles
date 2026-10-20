@@ -1,0 +1,574 @@
+# Load the shared Jira client on first use. Shell startup only registers autoload stubs.
+if (( ! $+functions[_jira_api] )); then
+	autoload -Uz _jira_common
+	_jira_common
+fi
+
+update_ticket() {
+	_jira_validate_env || return 1
+	emulate -L zsh
+
+	if [ "$#" -eq 0 ]; then
+		echo -n "Ticket Key > "
+		read -r ISSUE_INPUT
+		if [ -z "$ISSUE_INPUT" ]; then
+			echo "Error: Ticket key is required."
+			return 1
+		fi
+	elif [ "$#" -ne 1 ]; then
+		echo "Usage: update_ticket <TICKET_KEY>"
+		echo "Examples:"
+		echo "  update_ticket clstr-15888"
+		echo "  update_ticket ENG-1234"
+		return 1
+	else
+		ISSUE_INPUT="$1"
+	fi
+
+	ISSUE_INPUT=$(printf '%s' "$ISSUE_INPUT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:lower:]' '[:upper:]')
+	if [[ ! "$ISSUE_INPUT" =~ '^[A-Z][A-Z0-9_]*-[0-9]+$' ]]; then
+		echo "Error: Ticket key must match a Jira issue key such as PROJECT-1234."
+		return 1
+	fi
+
+	if ! command -v fzf >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+		echo "Error: update_ticket requires both fzf and jq."
+		return 1
+	fi
+
+	local ISSUE_RESPONSE
+	echo "Fetching $ISSUE_INPUT..."
+	ISSUE_RESPONSE=$(_jira_api --fail --quiet GET "/rest/api/2/issue/$ISSUE_INPUT" \
+		--data-urlencode "fields=summary,status,fixVersions,labels") || {
+		echo "Error: Could not fetch $ISSUE_INPUT."
+		return 1
+	}
+
+	local SUMMARY CURRENT_STATUS
+	SUMMARY=$(printf '%s' "$ISSUE_RESPONSE" | jq -r '.fields.summary // empty' 2>/dev/null)
+	CURRENT_STATUS=$(printf '%s' "$ISSUE_RESPONSE" | jq -r '.fields.status.name // empty' 2>/dev/null)
+	if [ -z "$SUMMARY" ] || [ -z "$CURRENT_STATUS" ]; then
+		echo "Error: Ticket not found or access denied."
+		printf '%s' "$ISSUE_RESPONSE" | jq -r '.errorMessages[]? // empty' 2>/dev/null
+		return 1
+	fi
+
+	echo "Ticket: $ISSUE_INPUT — $SUMMARY"
+	echo "Current status: $CURRENT_STATUS"
+
+	local OPERATION
+	OPERATION=$(printf 'State\nAdd comment\nFix Version/s\nAdd Fix Version/s\nAdd label\nUpdate Epic\nChange assignee\nChange QA Contact\n' | _fzf_jira --prompt="Operation > ")
+	if [ -z "$OPERATION" ]; then
+		echo "No operation selected. Aborting."
+		return 1
+	fi
+
+	if [ "$OPERATION" = "Add comment" ]; then
+		local -a COMMENT_LINES
+		local COMMENT_LINE COMMENT_BODY
+		COMMENT_LINES=()
+		echo "Comment > (multiline; type EOF on a new line to finish)"
+		while true; do
+			IFS= read -r COMMENT_LINE
+			if [ "$COMMENT_LINE" = "EOF" ]; then
+				break
+			fi
+			COMMENT_LINES+=("$COMMENT_LINE")
+		done
+		COMMENT_BODY="${(j:\n:)COMMENT_LINES}"
+		if [ -z "$COMMENT_BODY" ]; then
+			echo "Comment is required. Aborting."
+			return 1
+		fi
+
+		local COMMENT_RESPONSE COMMENT_HTTP_STATUS
+		COMMENT_RESPONSE=$(_jira_api --http-code POST "/rest/api/2/issue/$ISSUE_INPUT/comment" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')") || {
+			echo "Error: Failed to add a comment to $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		COMMENT_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$COMMENT_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully added a comment to $ISSUE_INPUT."
+		else
+			echo "Failed to add a comment to $ISSUE_INPUT (HTTP $COMMENT_HTTP_STATUS)."
+			printf '%s\n' "$COMMENT_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$COMMENT_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Add label" ]; then
+		local LABEL_LABELS EXISTING_LABEL NEW_LABEL LABEL_RESPONSE LABEL_HTTP_STATUS
+		local -a EXISTING_LABELS
+		EXISTING_LABELS=(${(f)$(printf '%s' "$ISSUE_RESPONSE" | jq -r '.fields.labels[]? // empty' 2>/dev/null)})
+		if [ ${#EXISTING_LABELS[@]} -gt 0 ]; then
+			echo "Existing labels: ${(j:, :)EXISTING_LABELS}"
+		else
+			echo "Existing labels: none"
+		fi
+
+		echo -n "New label > "
+		read -r NEW_LABEL
+		if [ -z "$NEW_LABEL" ]; then
+			echo "Label is required. Aborting."
+			return 1
+		fi
+		if ((${EXISTING_LABELS[(Ie)$NEW_LABEL]} > 0)); then
+			echo "Label '$NEW_LABEL' already exists on $ISSUE_INPUT."
+			return 1
+		fi
+
+		local LABELS_PAYLOAD='[]'
+		local EXISTING_LABEL_VALUE
+		for EXISTING_LABEL_VALUE in "${EXISTING_LABELS[@]}"; do
+			LABELS_PAYLOAD=$(printf '%s' "$LABELS_PAYLOAD" | jq --arg label "$EXISTING_LABEL_VALUE" '. + [$label]')
+		done
+		LABELS_PAYLOAD=$(printf '%s' "$LABELS_PAYLOAD" | jq --arg label "$NEW_LABEL" '. + [$label]')
+
+		LABEL_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --argjson labels "$LABELS_PAYLOAD" '{fields: {labels: $labels}}')") || {
+			echo "Error: Failed to add label to $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		LABEL_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$LABEL_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully added label '$NEW_LABEL' to $ISSUE_INPUT."
+		else
+			echo "Failed to add label to $ISSUE_INPUT (HTTP $LABEL_HTTP_STATUS)."
+			printf '%s\n' "$LABEL_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$LABEL_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Update Epic" ]; then
+		local EPIC_LINK_FIELD_ID EPIC_ROWS SELECTED_EPIC EPIC_KEY EPIC_SUMMARY
+		EPIC_LINK_FIELD_ID=$(_jira_field_id "Epic Link") || EPIC_LINK_FIELD_ID=""
+		if [ -z "$EPIC_LINK_FIELD_ID" ] || [ "$EPIC_LINK_FIELD_ID" = "null" ]; then
+			echo "Could not locate the Epic Link field."
+			return 1
+		fi
+
+		EPIC_ROWS=$(_create_ticket_eligible_epics "CLSTR")
+		if [ -z "$EPIC_ROWS" ]; then
+			echo "No eligible open or in-progress epics found."
+			return 1
+		fi
+
+		SELECTED_EPIC=$(printf '%s\n' "$EPIC_ROWS" | _fzf_jira --prompt="Epic > " --delimiter=$'\t' --with-nth=1,2,3,4)
+		if [ -z "$SELECTED_EPIC" ]; then
+			echo "No epic selected. Aborting."
+			return 1
+		fi
+		EPIC_KEY="${SELECTED_EPIC%%$'\t'*}"
+		local EPIC_REST="${SELECTED_EPIC#*$'\t'}"
+		EPIC_REST="${EPIC_REST#*$'\t'}"
+		EPIC_REST="${EPIC_REST#*$'\t'}"
+		EPIC_SUMMARY="${EPIC_REST%%$'\t'*}"
+
+		local EPIC_RESPONSE EPIC_HTTP_STATUS
+		EPIC_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --arg field "$EPIC_LINK_FIELD_ID" --arg epic "$EPIC_KEY" '{fields: {($field): $epic}}')")
+		_jira_take_http_code
+		EPIC_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$EPIC_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully updated $ISSUE_INPUT with Epic $EPIC_KEY."
+		else
+			echo "Failed to update Epic for $ISSUE_INPUT (HTTP $EPIC_HTTP_STATUS)."
+			printf '%s\n' "$EPIC_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$EPIC_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Change QA Contact" ]; then
+		local PROJECT_KEY QA_QUERY QA_ROWS SELECTED_QA QA_KEY QA_NAME
+		PROJECT_KEY="${ISSUE_INPUT%%-*}"
+		echo -n "QA Contact search (at least 2 letters) > "
+		read -r QA_QUERY
+		if [ ${#QA_QUERY} -lt 2 ]; then
+			echo "Enter at least 2 letters to search for a QA Contact."
+			return 1
+		fi
+
+		echo "Searching assignable users in $PROJECT_KEY..."
+		QA_ROWS=$(_jira_assignable_users "$QA_QUERY" "$PROJECT_KEY")
+		if [ -z "$QA_ROWS" ]; then
+			echo "No assignable users found for '$QA_QUERY'."
+			return 1
+		fi
+
+		SELECTED_QA=$(printf '%s\n' "$QA_ROWS" | _fzf_jira --prompt="QA Contact > " --delimiter=$'\t' --with-nth=2,3)
+		if [ -z "$SELECTED_QA" ]; then
+			echo "No QA Contact selected. Aborting."
+			return 1
+		fi
+		QA_KEY="${SELECTED_QA%%$'\t'*}"
+		local QA_REST="${SELECTED_QA#*$'\t'}"
+		QA_NAME="${QA_REST%%$'\t'*}"
+
+		local QA_RESPONSE QA_HTTP_STATUS
+		QA_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --arg qa "$QA_KEY" '{fields: {customfield_10860: {name: $qa}}}')") || {
+			echo "Error: Failed to change QA Contact for $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		QA_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$QA_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully assigned QA Contact for $ISSUE_INPUT to $QA_NAME."
+		else
+			echo "Failed to change QA Contact for $ISSUE_INPUT (HTTP $QA_HTTP_STATUS)."
+			printf '%s\n' "$QA_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$QA_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Change assignee" ]; then
+		local PROJECT_KEY ASSIGNEE_QUERY ASSIGNEE_ROWS SELECTED_ASSIGNEE ASSIGNEE_KEY ASSIGNEE_NAME
+		PROJECT_KEY="${ISSUE_INPUT%%-*}"
+		echo -n "Assignee search (at least 2 letters) > "
+		read -r ASSIGNEE_QUERY
+		if [ ${#ASSIGNEE_QUERY} -lt 2 ]; then
+			echo "Enter at least 2 letters to search for an assignee."
+			return 1
+		fi
+
+		echo "Searching assignable users in $PROJECT_KEY..."
+		ASSIGNEE_ROWS=$(_jira_assignable_users "$ASSIGNEE_QUERY" "$PROJECT_KEY")
+		if [ -z "$ASSIGNEE_ROWS" ]; then
+			echo "No assignable users found for '$ASSIGNEE_QUERY'."
+			return 1
+		fi
+
+		SELECTED_ASSIGNEE=$(printf '%s\n' "$ASSIGNEE_ROWS" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
+		if [ -z "$SELECTED_ASSIGNEE" ]; then
+			echo "No assignee selected. Aborting."
+			return 1
+		fi
+		ASSIGNEE_KEY="${SELECTED_ASSIGNEE%%$'\t'*}"
+		local ASSIGNEE_REST="${SELECTED_ASSIGNEE#*$'\t'}"
+		ASSIGNEE_NAME="${ASSIGNEE_REST%%$'\t'*}"
+
+		local ASSIGNEE_RESPONSE ASSIGNEE_HTTP_STATUS
+		ASSIGNEE_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --arg assignee "$ASSIGNEE_KEY" '{fields: {assignee: {name: $assignee}}}')") || {
+			echo "Error: Failed to change assignee for $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		ASSIGNEE_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$ASSIGNEE_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully assigned $ISSUE_INPUT to $ASSIGNEE_NAME."
+		else
+			echo "Failed to change assignee for $ISSUE_INPUT (HTTP $ASSIGNEE_HTTP_STATUS)."
+			printf '%s\n' "$ASSIGNEE_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$ASSIGNEE_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Add Fix Version/s" ]; then
+		local PROJECT_KEY VERSION_OPTIONS EXISTING_VERSION_IDS EXISTING_VERSION_NAMES
+		local SELECTED_VERSION VERSION_ID VERSION_NAME SELECTED_ID
+		local -a EXISTING_VERSION_ID_LIST ADD_VERSION_IDS ADD_VERSION_NAMES
+		PROJECT_KEY="${ISSUE_INPUT%%-*}"
+
+		EXISTING_VERSION_IDS=$(printf '%s' "$ISSUE_RESPONSE" | jq -r '.fields.fixVersions[]?.id // empty' 2>/dev/null)
+		EXISTING_VERSION_NAMES=$(printf '%s' "$ISSUE_RESPONSE" | jq -r '.fields.fixVersions[]?.name // empty' 2>/dev/null)
+		echo "Existing Fix Version/s: $(printf '%s\n' "$EXISTING_VERSION_NAMES" | paste -sd ', ' -)"
+
+		VERSION_OPTIONS=$(_jira_api --fail --quiet GET "/rest/api/2/project/$PROJECT_KEY/versions" |
+			jq -r '.[]? | select(.archived != true) | [(.id // ""), (.name // "Unknown")] | @tsv' 2>/dev/null)
+		if [ -z "$VERSION_OPTIONS" ]; then
+			echo "No selectable versions found for $PROJECT_KEY."
+			return 1
+		fi
+
+		EXISTING_VERSION_ID_LIST=(${(f)EXISTING_VERSION_IDS})
+		ADD_VERSION_IDS=()
+		ADD_VERSION_NAMES=()
+		while true; do
+			local AVAILABLE_VERSION_OPTIONS=""
+			while IFS=$'\t' read -r VERSION_ID VERSION_NAME; do
+				[ -z "$VERSION_ID" ] && continue
+				if ((${EXISTING_VERSION_ID_LIST[(Ie)$VERSION_ID]} == 0)) && ((${ADD_VERSION_IDS[(Ie)$VERSION_ID]} == 0)); then
+					AVAILABLE_VERSION_OPTIONS+="${VERSION_ID}\t${VERSION_NAME}\n"
+				fi
+			done <<<"$VERSION_OPTIONS"
+
+			if [ -z "$AVAILABLE_VERSION_OPTIONS" ]; then
+				echo "No additional versions are available."
+				break
+			fi
+
+			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | _fzf_jira --prompt="Add Fix Version/s > " --delimiter=$'\t' --with-nth=2)
+			if [ -z "$SELECTED_VERSION" ]; then
+				echo "No version selected. Aborting."
+				return 1
+			fi
+			SELECTED_ID="${SELECTED_VERSION%%$'\t'*}"
+			VERSION_NAME="${SELECTED_VERSION#*$'\t'}"
+			ADD_VERSION_IDS+=("$SELECTED_ID")
+			ADD_VERSION_NAMES+=("$VERSION_NAME")
+
+			local ADD_ANOTHER_VERSION
+			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
+			[ "$ADD_ANOTHER_VERSION" != "Yes" ] && break
+		done
+
+		if [ ${#ADD_VERSION_IDS[@]} -eq 0 ]; then
+			echo "No new Fix Version/s selected. Aborting."
+			return 1
+		fi
+
+		local FIX_VERSIONS_PAYLOAD='[]'
+		local EXISTING_VERSION_ID ADD_VERSION_ID
+		while IFS= read -r EXISTING_VERSION_ID; do
+			[ -n "$EXISTING_VERSION_ID" ] && FIX_VERSIONS_PAYLOAD=$(printf '%s' "$FIX_VERSIONS_PAYLOAD" | jq --arg id "$EXISTING_VERSION_ID" '. + [{id: $id}]')
+		done <<<"$EXISTING_VERSION_IDS"
+		for ADD_VERSION_ID in "${ADD_VERSION_IDS[@]}"; do
+			FIX_VERSIONS_PAYLOAD=$(printf '%s' "$FIX_VERSIONS_PAYLOAD" | jq --arg id "$ADD_VERSION_ID" '. + [{id: $id}]')
+		done
+
+		local ADD_VERSION_RESPONSE ADD_VERSION_HTTP_STATUS
+		ADD_VERSION_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --argjson fix_versions "$FIX_VERSIONS_PAYLOAD" '{fields: {fixVersions: $fix_versions}}')") || {
+			echo "Error: Failed to append Fix Version/s for $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		ADD_VERSION_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$ADD_VERSION_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully appended Fix Version/s to $ISSUE_INPUT: ${(j:, :)ADD_VERSION_NAMES}"
+		else
+			echo "Failed to append Fix Version/s for $ISSUE_INPUT (HTTP $ADD_VERSION_HTTP_STATUS)."
+			printf '%s\n' "$ADD_VERSION_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$ADD_VERSION_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	if [ "$OPERATION" = "Fix Version/s" ]; then
+		local PROJECT_KEY VERSION_OPTIONS SELECTED_VERSION VERSION_ID VERSION_NAME
+		local -a FIX_VERSION_IDS FIX_VERSION_NAMES
+		PROJECT_KEY="${ISSUE_INPUT%%-*}"
+		VERSION_OPTIONS=$(_jira_api --fail --quiet GET "/rest/api/2/project/$PROJECT_KEY/versions" |
+			jq -r '.[]? | select(.archived != true) | [(.id // ""), (.name // "Unknown")] | @tsv' 2>/dev/null)
+		if [ -z "$VERSION_OPTIONS" ]; then
+			echo "No selectable versions found for $PROJECT_KEY."
+			return 1
+		fi
+
+		FIX_VERSION_IDS=()
+		FIX_VERSION_NAMES=()
+		while true; do
+			local AVAILABLE_VERSION_OPTIONS=""
+			local selected_id
+			while IFS=$'\t' read -r VERSION_ID VERSION_NAME; do
+				[ -z "$VERSION_ID" ] && continue
+				if ((${FIX_VERSION_IDS[(Ie)$VERSION_ID]} == 0)); then
+					AVAILABLE_VERSION_OPTIONS+="${VERSION_ID}\t${VERSION_NAME}\n"
+				fi
+			done <<<"$VERSION_OPTIONS"
+			if [ -z "$AVAILABLE_VERSION_OPTIONS" ]; then
+				echo "All available versions have been selected."
+				break
+			fi
+
+			SELECTED_VERSION=$(printf '%b' "$AVAILABLE_VERSION_OPTIONS" | _fzf_jira --prompt="Fix Version/s > " --delimiter=$'\t' --with-nth=2)
+			if [ -z "$SELECTED_VERSION" ]; then
+				echo "No version selected. Aborting."
+				return 1
+			fi
+			selected_id="${SELECTED_VERSION%%$'\t'*}"
+			VERSION_NAME="${SELECTED_VERSION#*$'\t'}"
+			FIX_VERSION_IDS+=("$selected_id")
+			FIX_VERSION_NAMES+=("$VERSION_NAME")
+
+			local ADD_ANOTHER_VERSION
+			ADD_ANOTHER_VERSION=$(printf 'No\nYes\n' | _fzf_jira --prompt="Add another Fix Version/s? > ")
+			[ "$ADD_ANOTHER_VERSION" != "Yes" ] && break
+		done
+
+		local FIX_VERSIONS_PAYLOAD='[]'
+		local selected_version_id
+		for selected_version_id in "${FIX_VERSION_IDS[@]}"; do
+			FIX_VERSIONS_PAYLOAD=$(printf '%s' "$FIX_VERSIONS_PAYLOAD" | jq --arg id "$selected_version_id" '. + [{id: $id}]')
+		done
+
+		local FIX_VERSION_RESPONSE FIX_VERSION_HTTP_STATUS
+		FIX_VERSION_RESPONSE=$(_jira_api --http-code PUT "/rest/api/2/issue/$ISSUE_INPUT" \
+			-H "Content-Type: application/json" \
+			--data "$(jq -n --argjson fix_versions "$FIX_VERSIONS_PAYLOAD" '{fields: {fixVersions: $fix_versions}}')") || {
+			echo "Error: Failed to update Fix Version/s for $ISSUE_INPUT."
+			return 1
+		}
+		_jira_take_http_code
+		FIX_VERSION_HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+		if [[ "$FIX_VERSION_HTTP_STATUS" = 2[0-9][0-9] ]]; then
+			echo "Successfully updated Fix Version/s for $ISSUE_INPUT: ${(j:, :)FIX_VERSION_NAMES}"
+		else
+			echo "Failed to update Fix Version/s for $ISSUE_INPUT (HTTP $FIX_VERSION_HTTP_STATUS)."
+			printf '%s\n' "$FIX_VERSION_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$FIX_VERSION_RESPONSE"
+			return 1
+		fi
+		return 0
+	fi
+
+	local TRANSITIONS_RESPONSE
+	TRANSITIONS_RESPONSE=$(_jira_api --fail --quiet GET "/rest/api/2/issue/$ISSUE_INPUT/transitions" \
+		--data-urlencode "expand=transitions.fields") || {
+		echo "Error: Could not fetch available transitions for $ISSUE_INPUT."
+		return 1
+	}
+
+	local TRANSITION_ROWS
+	TRANSITION_ROWS=$(printf '%s' "$TRANSITIONS_RESPONSE" | jq -r '.transitions[]? | [(.id | tostring), (.name // "Unknown"), (.to.name // "Unknown")] | @tsv' 2>/dev/null)
+	if [ -z "$TRANSITION_ROWS" ]; then
+		echo "No available transitions from '$CURRENT_STATUS' for $ISSUE_INPUT."
+		return 1
+	fi
+
+	local SELECTED_TRANSITION TRANSITION_ID TRANSITION_NAME TARGET_STATUS
+	SELECTED_TRANSITION=$(printf '%s\n' "$TRANSITION_ROWS" | _fzf_jira --prompt="Next status > " --delimiter=$'\t' --with-nth=2,3)
+	if [ -z "$SELECTED_TRANSITION" ]; then
+		echo "No transition selected. Aborting."
+		return 1
+	fi
+
+	TRANSITION_ID="${SELECTED_TRANSITION%%$'\t'*}"
+	local TRANSITION_REST="${SELECTED_TRANSITION#*$'\t'}"
+	TRANSITION_NAME="${TRANSITION_REST%%$'\t'*}"
+	TARGET_STATUS="${TRANSITION_REST#*$'\t'}"
+
+	local TRANSITION_FIELDS_JSON
+	TRANSITION_FIELDS_JSON=$(printf '%s' "$TRANSITIONS_RESPONSE" | jq -c --arg id "$TRANSITION_ID" '
+    .transitions[]? | select((.id | tostring) == $id) | (.fields // {})
+  ' 2>/dev/null)
+	[ -z "$TRANSITION_FIELDS_JSON" ] && TRANSITION_FIELDS_JSON='{}'
+
+	local TRANSITION_FIELD_ROWS
+	TRANSITION_FIELD_ROWS=$(printf '%s' "$TRANSITION_FIELDS_JSON" | jq -r '
+    to_entries[]
+    | select(.value.required == true)
+    | [ .key, (.value.name // .key), (.value.schema.type // "string"), (.value.schema.items // ""), ((.value.allowedValues // []) | length | tostring) ]
+    | @tsv
+  ' 2>/dev/null)
+
+	local TRANSITION_FIELDS_PAYLOAD='{}'
+	local FIELD_ID FIELD_LABEL FIELD_TYPE FIELD_ITEMS FIELD_OPTION_COUNT
+	local FIELD_OPTIONS SELECTED_OPTION SELECTED_ID SELECTED_VALUE FIELD_VALUE
+	local FIELD_ROWS FIELD_QUERY FIELD_RESPONSE PROJECT_KEY
+	PROJECT_KEY="${ISSUE_INPUT%%-*}"
+
+	while IFS=$'\t' read -r FIELD_ID FIELD_LABEL FIELD_TYPE FIELD_ITEMS FIELD_OPTION_COUNT; do
+		[ -z "$FIELD_ID" ] && continue
+		FIELD_OPTIONS=$(printf '%s' "$TRANSITION_FIELDS_JSON" | jq -r --arg field_id "$FIELD_ID" '
+      .[$field_id].allowedValues[]?
+      | [(.id // ""), (.name // .value // .displayName // .key // "Unknown")]
+      | @tsv
+    ' 2>/dev/null)
+
+		if [ -z "$FIELD_OPTIONS" ] && [[ "$FIELD_TYPE" = "version" || "$FIELD_ITEMS" = "version" || "$FIELD_ID" = "versions" || "$FIELD_ID" = "fixVersions" ]]; then
+			FIELD_OPTIONS=$(_jira_api --fail --quiet GET "/rest/api/2/project/$PROJECT_KEY/versions" |
+				jq -r '.[]? | select(.archived != true) | [(.id // ""), (.name // "Unknown")] | @tsv' 2>/dev/null)
+		fi
+
+		if [ -n "$FIELD_OPTIONS" ]; then
+			SELECTED_OPTION=$(printf '%s\n' "$FIELD_OPTIONS" | _fzf_jira --prompt="$FIELD_LABEL > " --delimiter=$'\t' --with-nth=2)
+			if [ -z "$SELECTED_OPTION" ]; then
+				echo "No value selected for '$FIELD_LABEL'. Aborting."
+				return 1
+			fi
+			SELECTED_ID="${SELECTED_OPTION%%$'\t'*}"
+			SELECTED_VALUE="${SELECTED_OPTION#*$'\t'}"
+		else
+			echo -n "$FIELD_LABEL > "
+			read -r SELECTED_VALUE
+			if [ -z "$SELECTED_VALUE" ]; then
+				echo "Value required for '$FIELD_LABEL'. Aborting."
+				return 1
+			fi
+			SELECTED_ID=""
+		fi
+
+		if [ "$FIELD_TYPE" = "array" ]; then
+			if [ "$FIELD_ITEMS" = "version" ] || [ "$FIELD_ITEMS" = "component" ]; then
+				if [ -n "$SELECTED_ID" ]; then
+					FIELD_VALUE=$(jq -n --arg id "$SELECTED_ID" '[{id: $id}]')
+				else
+					FIELD_VALUE=$(jq -n --arg name "$SELECTED_VALUE" '[{name: $name}]')
+				fi
+			elif [ "$FIELD_ITEMS" = "option" ]; then
+				FIELD_VALUE=$(jq -n --arg name "$SELECTED_VALUE" '[{name: $name}]')
+			else
+				FIELD_VALUE=$(jq -n --arg value "$SELECTED_VALUE" '[ $value ]')
+			fi
+		elif [ "$FIELD_TYPE" = "option" ]; then
+			if [ -n "$SELECTED_ID" ]; then
+				FIELD_VALUE=$(jq -n --arg id "$SELECTED_ID" '{id: $id}')
+			else
+				FIELD_VALUE=$(jq -n --arg name "$SELECTED_VALUE" '{name: $name}')
+			fi
+		elif [ "$FIELD_TYPE" = "version" ] || [ "$FIELD_TYPE" = "component" ]; then
+			if [ -n "$SELECTED_ID" ]; then
+				FIELD_VALUE=$(jq -n --arg id "$SELECTED_ID" '{id: $id}')
+			else
+				FIELD_VALUE=$(jq -n --arg name "$SELECTED_VALUE" '{name: $name}')
+			fi
+		elif [ "$FIELD_TYPE" = "user" ]; then
+			if [ -n "$SELECTED_ID" ]; then
+				FIELD_VALUE=$(jq -n --arg name "$SELECTED_ID" '{name: $name}')
+			else
+				FIELD_VALUE=$(jq -n --arg name "$SELECTED_VALUE" '{name: $name}')
+			fi
+		else
+			FIELD_VALUE=$(jq -n --arg value "$SELECTED_VALUE" '$value')
+		fi
+		TRANSITION_FIELDS_PAYLOAD=$(printf '%s' "$TRANSITION_FIELDS_PAYLOAD" | jq --arg field_id "$FIELD_ID" --argjson value "$FIELD_VALUE" '. + {($field_id): $value}')
+	done <<<"$TRANSITION_FIELD_ROWS"
+
+	local CONFIRMATION
+	CONFIRMATION=$(printf 'Change to %s\nCancel\n' "$TARGET_STATUS" | _fzf_jira --prompt="Confirm transition '$TRANSITION_NAME' > ")
+	if [ "$CONFIRMATION" != "Change to $TARGET_STATUS" ]; then
+		echo "Ticket update cancelled."
+		return 1
+	fi
+
+	local UPDATE_RESPONSE HTTP_STATUS
+	UPDATE_RESPONSE=$(_jira_api --http-code POST "/rest/api/2/issue/$ISSUE_INPUT/transitions" \
+		-H "Content-Type: application/json" \
+		--data "$(jq -n --arg id "$TRANSITION_ID" --argjson fields "$TRANSITION_FIELDS_PAYLOAD" '{transition: {id: $id}, fields: $fields}')") || {
+		echo "Error: Failed to update $ISSUE_INPUT."
+		return 1
+	}
+	_jira_take_http_code
+	HTTP_STATUS="$_JIRA_HTTP_CODE"
+
+	if [[ "$HTTP_STATUS" = 2[0-9][0-9] ]]; then
+		echo "Successfully changed $ISSUE_INPUT from '$CURRENT_STATUS' to '$TARGET_STATUS'."
+	else
+		echo "Failed to update $ISSUE_INPUT (HTTP $HTTP_STATUS)."
+		printf '%s\n' "$UPDATE_RESPONSE" | jq . 2>/dev/null || printf '%s\n' "$UPDATE_RESPONSE"
+		return 1
+	fi
+}
+update_ticket "$@"

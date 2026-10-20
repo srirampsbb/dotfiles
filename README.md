@@ -131,7 +131,18 @@ To upgrade (e.g. to 3.15):
 └── zsh/
     ├── aliases.zsh
     ├── git-functions.zsh
-    ├── jira-funcs.zsh
+    ├── jira/
+    │   ├── _jira_common
+    │   ├── _create_ticket
+    │   ├── jira
+    │   ├── describe_ticket
+    │   ├── create_ticket
+    │   ├── update_ticket
+    │   ├── list_tickets
+    │   ├── my_filed_tickets
+    │   ├── my_resolved_tickets
+    │   ├── my_open_tickets
+    │   └── show_epic_summary
     └── zshrc
 ```
 
