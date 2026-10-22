@@ -2,6 +2,15 @@
 # Git Worktree Automation
 # ==============================================================================
 
+link-agent-core() {
+	mkdir -p .cursor .opencode
+	ln -sf ~/.config/agents/AGENTS.md AGENTS.md
+	rm -rf .cursor/skills .opencode/skills
+	ln -s ~/.config/agents/skills .cursor/skills
+	ln -s ~/.config/agents/skills .opencode/skills
+	echo "Symlinked AGENTS.md and skills/ from ~/.config/agents/ to .cursor/ and .opencode/"
+}
+
 # Checkout a Gerrit CR in a new worktree
 #
 # Parses a Gerrit change URL like:
@@ -362,6 +371,8 @@ gwa() {
 		echo "❌ Error: Worktree created but failed to switch to '$target_path'."
 		return 1
 	fi
+
+	link-agent-core
 
 	echo "✅ Worktree created successfully."
 	echo "📦 Repo: $selected_repo_path"

@@ -4,5 +4,4 @@ config/herdr/herdr-server.log
 config/herdr/session.json
 config/opencode/service.json
 zsh/local/*
-AGENTS.md
 .DS_Store*

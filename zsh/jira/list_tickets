@@ -77,53 +77,9 @@ _list_tickets_pick_assignee() {
 		return 1
 	fi
 
-	local CHOICE
-	CHOICE=$(printf "Assigned to Me\nAssignee (search from list)\n" | _fzf_jira --prompt="Assignee > ")
-
-	if [ -z "$CHOICE" ]; then
-		return 1
-	fi
-
-	if [ "$CHOICE" = "Assigned to Me" ]; then
-		ASSIGNEE_USER="$CURRENT_USER"
-		ASSIGNEE_DISPLAY="Me ($CURRENT_USER_DISPLAY)"
-		return 0
-	fi
-
-	echo -n "Type first 2+ characters of assignee name > "
-	local query
-	read -r query
-	if [ ${#query} -lt 2 ]; then
-		echo "Need at least 2 characters to search assignees."
-		return 1
-	fi
-
-	# First try assignable/search in CLSTR project, then ENG
-	local rows=""
-	for _proj in CLSTR ENG; do
-		rows=$(_jira_assignable_users "$query" "$_proj")
-		if [ -n "$rows" ]; then
-			break
-		fi
-	done
-
-	if [ -z "$rows" ]; then
-		echo "No assignable users found for '${query}'."
-		return 1
-	fi
-
-	local selected
-	selected=$(printf '%s\n' "$rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
-
-	if [ -z "$selected" ]; then
-		return 1
-	fi
-
-	ASSIGNEE_USER=$(printf '%s' "$selected" | cut -f1)
-	local rest="${selected#*$'\t'}"
-	local picked_name
-	picked_name=$(printf '%s' "$rest" | cut -f1)
-	ASSIGNEE_DISPLAY="$picked_name (${ASSIGNEE_USER})"
+	ASSIGNEE_USER="$CURRENT_USER"
+	ASSIGNEE_DISPLAY="Me ($CURRENT_USER_DISPLAY)"
+	return 0
 }
 
 _list_tickets_pick_state() {

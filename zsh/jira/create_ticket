@@ -330,35 +330,8 @@ EOF
 		fi
 	fi
 
-	# Assignee prompt: show dropdown with current default, allow picking another user or unassigning
-	local ASSIGNEE_CHOICE
-	if [ -z "$ASSIGNEE" ]; then
-		ASSIGNEE_CHOICE=$(printf "Set Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
-	else
-		ASSIGNEE_CHOICE=$(printf "Keep [$ASSIGNEE]\nChange Assignee\nUnassign\n" | _fzf_jira --prompt="Assignee > ")
-	fi
-	if [ "$ASSIGNEE_CHOICE" = "Change Assignee" ] || [ "$ASSIGNEE_CHOICE" = "Set Assignee" ]; then
-		local _assignee_query _assignee_rows _selected _picked
-		echo -n "Assignee search > "
-		read -r _assignee_query
-		if [ ${#_assignee_query} -lt 2 ]; then
-			echo "Type at least 2 characters to search assignees."
-		else
-			echo "Searching assignees in ${PROJECT_KEY}..."
-			_assignee_rows=$(_jira_assignable_users "$_assignee_query" "$PROJECT_KEY")
-			if [ -z "$_assignee_rows" ]; then
-				echo "No assignable users found for '${_assignee_query}'."
-			else
-				_selected=$(printf '%s\n' "$_assignee_rows" | _fzf_jira --prompt="Assignee > " --delimiter=$'\t' --with-nth=2,3)
-				_picked=$(printf '%s' "$_selected" | cut -f1)
-				if [ -n "$_picked" ]; then
-					ASSIGNEE="$_picked"
-				fi
-			fi
-		fi
-	elif [ "$ASSIGNEE_CHOICE" = "Unassign" ]; then
-		ASSIGNEE=""
-	fi
+# Assignee is set to current user by default, no prompt for change or unassign
+
 
 	if [[ "${ISSUE_TYPE_NAME:l}" != "epic" && -n "$EPIC_KEY_INPUT" ]]; then
 		SELECTED_EPIC_KEY="$EPIC_KEY_INPUT"
