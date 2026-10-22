@@ -3,12 +3,17 @@
 # ==============================================================================
 
 link-agent-files() {
-  mkdir -p .cursor .opencode
-  ln -sf ~/.config/agents/AGENTS.md AGENTS.md
-  rm -rf .cursor/skills .opencode/skills
-  ln -s ~/.config/agents/skills .cursor/skills
-  ln -s ~/.config/agents/skills .opencode/skills
-  echo "Symlinked AGENTS.md and skills/ from ~/.config/agents/ to .cursor/ and .opencode/"
+	local src_dir="$HOME/.dotfiles/agents"
+	if [[ ! -d "$src_dir" ]]; then
+		echo "❌ Error: agents source directory '$src_dir' does not exist."
+		return 1
+	fi
+	mkdir -p .cursor .opencode
+	ln -sf "$src_dir/AGENTS.md" AGENTS.md
+	rm -rf .cursor/skills .opencode/skills
+	ln -s "$src_dir/skills" .cursor/skills
+	ln -s "$src_dir/skills" .opencode/skills
+	echo "Symlinked AGENTS.md and skills/ from $src_dir/ to .cursor/ and .opencode/"
 }
 
 # Checkout a Gerrit CR in a new worktree
@@ -367,14 +372,14 @@ gwa() {
 		fi
 	fi
 
-  if ! cd "$target_path"; then
-    echo "❌ Error: Worktree created but failed to switch to '$target_path'."
-    return 1
-  fi
+	if ! cd "$target_path"; then
+		echo "❌ Error: Worktree created but failed to switch to '$target_path'."
+		return 1
+	fi
 
-  link-agent-files
+	link-agent-files
 
-  echo "✅ Worktree created successfully."
+	echo "✅ Worktree created successfully."
 	echo "📦 Repo: $selected_repo_path"
 	echo "🌿 Branch: $selected_remote_branch"
 	echo "🌳 Worktree: $target_path"
