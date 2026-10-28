@@ -522,7 +522,7 @@ update_ticket() {
 			else
 				FIELD_VALUE=$(jq -n --arg value "$SELECTED_VALUE" '[ $value ]')
 			fi
-		elif [ "$FIELD_TYPE" = "option" ]; then
+		elif [ "$FIELD_TYPE" = "option" ] || [ "$FIELD_TYPE" = "resolution" ]; then
 			if [ -n "$SELECTED_ID" ]; then
 				FIELD_VALUE=$(jq -n --arg id "$SELECTED_ID" '{id: $id}')
 			else
