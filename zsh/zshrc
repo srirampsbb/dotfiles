@@ -60,7 +60,7 @@ _jira_register_cmds() {
 		[[ -f "$jira_file" ]] || continue
 		jira_cmds+=("${jira_file:t}")
 	done
-	if (( ${#jira_cmds} )); then
+	if ((${#jira_cmds})); then
 		unfunction "${jira_cmds[@]}" 2>/dev/null
 		autoload -Uz "${jira_cmds[@]}"
 	fi
@@ -131,7 +131,7 @@ done
 if [[ -z "$_ZSHRC_COMPINIT_DONE" ]]; then
 	autoload -Uz compinit
 	compinit -C
-	if (( $+functions[compdef] )); then
+	if (($+functions[compdef])); then
 		compdef _create_ticket create_ticket
 	fi
 	_ZSHRC_COMPINIT_DONE=1
@@ -190,6 +190,9 @@ if command -v go >/dev/null 2>&1; then
 	[[ -d "$GOPATH/bin" ]] && export PATH="$GOPATH/bin:$PATH"
 fi
 
+# 5. dotfiles bin dir
+[[ -d "$HOME/.dotfiles/bin" ]] && export PATH="$HOME/.dotfiles/bin:$PATH"
+
 eval "$(zoxide init zsh)"
 
 # ==============================================================================
@@ -199,3 +202,7 @@ eval "$(zoxide init zsh)"
 # "nvim"), which leaves Ctrl+A/Ctrl+E as self-insert instead of beginning/end of
 # line. Explicitly select emacs mode; this also overrides EDITOR auto-detection.
 bindkey -e
+
+# nutanix-harness: if you delete these lines they will be re-added next time nutanix-harness runs; comment them out instead to disable.
+[ -f "${HOME}/.nutanix-harness.rc" ] && source "${HOME}/.nutanix-harness.rc"
+alias opencode=nutanix-harness

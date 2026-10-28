@@ -153,7 +153,7 @@ unalias cdr cdw gwo gwa gwl gws gwr gbs gpush cocr 2>/dev/null
 
 # Alias for checkout-gerrit-cr
 alias cocr='checkout-gerrit-cr'
-alias gwl='gws --list'
+alias gwl='gws'
 alias gwr='gws --remove'
 
 # Fuzzy switch to a repository under ~/code/repos
@@ -593,8 +593,24 @@ gws() {
 			echo "❌ Cancelled."
 			return 1
 		fi
-		git worktree remove "$selected_path"
-		return $?
+		local remove_err
+		if ! remove_err="$(git -C "$selected_path" worktree remove "$selected_path" 2>&1)"; then
+			# Git refuses to remove worktrees containing submodules, even though
+			# they can be force-removed. Only force if nothing is uncommitted.
+			if [[ "$remove_err" == *"containing submodules"* ]]; then
+				echo "⚠️  Worktree contains submodules; verifying it is clean before forcing removal..."
+				if [[ -n "$(git -C "$selected_path" status --porcelain -uno 2>/dev/null)" ]] ||
+					[[ -n "$(git -C "$selected_path" submodule foreach --quiet --recursive 'git status --porcelain -uno' 2>/dev/null)" ]]; then
+					echo "❌ Worktree or its submodules have uncommitted changes; not removing."
+					return 1
+				fi
+				git -C "$selected_path" worktree remove --force "$selected_path"
+				return $?
+			fi
+			print -r -- "$remove_err" >&2
+			return 1
+		fi
+		return 0
 	fi
 
 	if ! cd "$selected_path"; then
