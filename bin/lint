@@ -13,7 +13,7 @@
 #   file ...   Check only the given files. Relative paths are resolved against
 #              the directory the script was invoked from.
 #
-# With no arguments, staged, unstaged, and untracked files are checked.
+# With no arguments, staged and unstaged changes to tracked files are checked.
 
 # Parse arguments: an optional --all flag and/or an explicit list of files.
 integer CHECK_ALL=0
@@ -39,7 +39,7 @@ cd "$REPO_ROOT" || exit 1
 filter_existing() {
 	local f
 	for f in "$@"; do
-		[[ -f "$f" ]] && printf '%s\0' "$f"
+		[[ -f "$f" && ! -L "$f" ]] && printf '%s\0' "$f"
 	done
 }
 
@@ -52,14 +52,13 @@ elif ((${#INPUT_FILES[@]})); then
 	# Explicit file list (already resolved to absolute paths above).
 	CHANGED_FILES=("${INPUT_FILES[@]}")
 else
-	# Staged, unstaged, and untracked files. -z emits NUL-delimited paths so
-	# names containing spaces or quotes stay intact, --diff-filter=d drops
-	# deletions, and --exclude-standard honours .gitignore for untracked files.
+	# Staged and unstaged changes to tracked files. -z emits NUL-delimited paths
+	# so names containing spaces or quotes stay intact, --diff-filter=d drops
+	# deletions. Untracked files are not checked.
 	# (u) dedupes paths that are both staged and further modified.
 	CHANGED_FILES=(${(0u)"$(
 		git diff --name-only -z --diff-filter=d
 		git diff --name-only -z --cached --diff-filter=d
-		git ls-files --others --exclude-standard -z
 	)"})
 fi
 CHANGED_FILES=(${(0)"$(filter_existing "${CHANGED_FILES[@]}")"})
