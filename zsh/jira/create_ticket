@@ -310,7 +310,7 @@ EOF
 			fi
 			DESCRIPTION_LINES+=("$DESCRIPTION_LINE")
 		done
-		DESCRIPTION="${(j:\n:)DESCRIPTION_LINES}"
+		DESCRIPTION="${(F)DESCRIPTION_LINES}"
 		if [ -z "$DESCRIPTION" ]; then
 			echo "Description is required. Aborting."
 			return 1

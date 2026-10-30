@@ -361,6 +361,73 @@ _create_ticket_eligible_epics() {
   ' 2>/dev/null
 }
 
+# ------------------------------------------------------------------------------
+# Comment editor with @mention picker
+# ------------------------------------------------------------------------------
+
+# zle widget bound to "@" while a comment is being typed.
+# Opens an fzf picker of assignable users in the ticket's project. Results load
+# only after 2+ characters are typed. ENTER inserts [~username]; ESC inserts "@".
+_jira_mention_widget() {
+	emulate -L zsh
+	# fzf parses the reload action, so keep it free of parentheses and commas.
+	# The helper source goes in a temp script that the reload runs.
+	local script reload_cmd selected
+	script=$(mktemp "${TMPDIR:-/tmp}/jira-mention.XXXXXX") || return 1
+	{
+		typeset -f _jira_validate_env _jira_api _jira_assignable_users
+		print -r -- '_jira_assignable_users "$1" "$2"'
+	} >"$script"
+	reload_cmd="zsh -f ${(q)script} {q} ${(q)_JIRA_MENTION_PROJECT}"
+
+	zle -I
+	selected=$(: | _fzf_jira --disabled --delimiter=$'\t' --with-nth=2,3 \
+		--prompt="Mention > " \
+		--header="Type at least 2 letters to search. ENTER inserts, ESC cancels." \
+		--bind "change:reload:${reload_cmd}")
+	rm -f "$script"
+	zle redisplay
+
+	if [ -n "$selected" ]; then
+		local username="${selected%%$'\t'*}"
+		LBUFFER+="[~${username}]"
+	else
+		LBUFFER+="@"
+	fi
+}
+
+# Multi-line comment reader. Each line is edited with vared so "@" can trigger
+# the mention widget. A line containing only EOF finishes input.
+# Usage: _jira_read_comment <project_key>
+# Sets _JIRA_COMMENT_BODY (newline-joined). Returns 1 if input was aborted.
+_jira_read_comment() {
+	emulate -L zsh
+	local -x _JIRA_MENTION_PROJECT="$1"
+	local line rc=0
+	local -a lines
+	_JIRA_COMMENT_BODY=""
+
+	zle -N _jira_mention_widget
+	bindkey -M main '@' _jira_mention_widget
+
+	echo "Comment > (multiline; type @ to mention a user; type EOF or eof on a new line to finish)"
+	{
+		while true; do
+			line=""
+			vared -p "" line || { rc=1; break; }
+			if [ "$line" = "EOF" ] || [ "$line" = "eof" ]; then
+				break
+			fi
+			lines+=("$line")
+		done
+	} always {
+		bindkey -M main '@' self-insert
+	}
+
+	_JIRA_COMMENT_BODY="${(F)lines}"
+	return "$rc"
+}
+
 _jira_common() {
 	:
 }

@@ -1,5 +1,7 @@
 # Load the shared Jira client on first use. Shell startup only registers autoload stubs.
-if (( ! $+functions[_jira_api] )); then
+if (( ! $+functions[_jira_api] )) || (( ! $+functions[_jira_read_comment] )); then
+	# Reload when a shell still holds an older copy of _jira_common.
+	unfunction _jira_common 2>/dev/null
 	autoload -Uz _jira_common
 	_jira_common
 fi
@@ -64,18 +66,12 @@ update_ticket() {
 	fi
 
 	if [ "$OPERATION" = "Add comment" ]; then
-		local -a COMMENT_LINES
-		local COMMENT_LINE COMMENT_BODY
-		COMMENT_LINES=()
-		echo "Comment > (multiline; type EOF on a new line to finish)"
-		while true; do
-			IFS= read -r COMMENT_LINE
-			if [ "$COMMENT_LINE" = "EOF" ]; then
-				break
-			fi
-			COMMENT_LINES+=("$COMMENT_LINE")
-		done
-		COMMENT_BODY="${(j:\n:)COMMENT_LINES}"
+		local COMMENT_BODY
+		if ! _jira_read_comment "${ISSUE_INPUT%%-*}"; then
+			echo "Comment input cancelled. Aborting."
+			return 1
+		fi
+		COMMENT_BODY="$_JIRA_COMMENT_BODY"
 		if [ -z "$COMMENT_BODY" ]; then
 			echo "Comment is required. Aborting."
 			return 1

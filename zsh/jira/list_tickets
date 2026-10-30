@@ -90,7 +90,7 @@ _list_tickets_pick_state() {
 	if [ -z "$statuses" ]; then
 		echo "No statuses found from Jira metadata. Falling back to default list."
 		local default_states=("Open" "In Progress" "Resolved" "Closed" "To Do" "In Review")
-		statuses="${(j:\n:)default_states}"
+		statuses="${(F)default_states}"
 	fi
 
 	local CHOICE

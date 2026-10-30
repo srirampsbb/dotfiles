@@ -36,6 +36,7 @@ Usage:
   checkout-gerrit-cr <gerrit-change-url>
 
 Creates a new git worktree containing the given Gerrit Change Request (CR).
+The repo must be checked out under ~/code/repos (matched by Gerrit project name).
 
 The change URL must look like:
   https://nugerrit.ntnxdpro.com/c/<repo>/+/<change-number>
@@ -57,6 +58,23 @@ EOF
 		return 1
 	fi
 
+	if [[ -z "${GERRIT_TOKEN:-}" ]]; then
+		echo "❌ Error: GERRIT_TOKEN is not set."
+		echo "   Set your Gerrit HTTP token in the environment (e.g. export GERRIT_TOKEN=... in ~/.zshrc or a secrets file) and retry."
+		return 1
+	fi
+
+	if [[ -z "${GERRIT_USERNAME:-}" ]]; then
+		echo "❌ Error: GERRIT_USERNAME is not set."
+		echo "   Set your Gerrit username in the environment (e.g. export GERRIT_USERNAME=... in ~/.zshrc) and retry."
+		return 1
+	fi
+
+	if ! command -v jq >/dev/null 2>&1; then
+		echo "❌ Error: 'jq' is required but was not found in PATH."
+		return 1
+	fi
+
 	# Extract repo and change number from URL
 	local repo
 	repo="$(echo "$url" | sed -E 's|.*/c/([^/]+)/.*|\1|')"
@@ -71,12 +89,32 @@ EOF
 
 	local last_two=${change_num: -2}
 	local ref_base="refs/changes/$last_two/$change_num"
-	local ref_ps1="$ref_base/1"
-	local ref_ps2="$ref_base/2"
 
 	local worktrees_root="$HOME/code/worktrees"
 	local target_path="$worktrees_root/${repo}-cr${change_num}"
 	local branch_name="cr-${change_num}"
+
+	# Find the local clone of this repo under ~/code/repos by matching the
+	# Gerrit project name (last path segment of origin) against the CR URL.
+	local repos_root="$HOME/code/repos"
+	local repo_path=""
+	local candidate origin_url origin_name
+	while IFS= read -r candidate; do
+		candidate="${candidate%/.git}"
+		origin_url="$(git -C "$candidate" remote get-url origin 2>/dev/null)" || continue
+		origin_name="${origin_url%/}"
+		origin_name="${origin_name%.git}"
+		origin_name="${origin_name:t}"
+		if [[ "$origin_name" == "$repo" ]]; then
+			repo_path="$candidate"
+			break
+		fi
+	done < <(find "$repos_root" -name .git -prune 2>/dev/null)
+
+	if [[ -z "$repo_path" ]]; then
+		echo "❌ Error: Repo '$repo' is not checked out in $repos_root."
+		return 1
+	fi
 
 	# Check if worktree path already exists
 	if [[ -e "$target_path" || -L "$target_path" ]]; then
@@ -86,7 +124,7 @@ EOF
 
 	# Check for duplicate branch across existing worktrees
 	local existing
-	existing="$(git worktree list --porcelain 2>/dev/null | grep "branch refs/heads/$branch_name")"
+	existing="$(git -C "$repo_path" worktree list --porcelain 2>/dev/null | grep -Fx "branch refs/heads/$branch_name")"
 	if [[ -n "$existing" ]]; then
 		echo "❌ Error: Branch '$branch_name' is already checked out in a worktree."
 		return 1
@@ -96,55 +134,74 @@ EOF
 	local fetch_output
 	local dst_ref="refs/gerrit-tmp/cr-${change_num}"
 
-	# Use the Gerrit URL with credentials (as recommended by Gerrit UI)
-	local remote_url
-	remote_url="$(git remote get-url origin 2>/dev/null)"
+	# Ask the Gerrit REST API for the current (latest) patch set
+	local gerrit_user="$GERRIT_USERNAME"
+	local api_body api_json latest_sha latest_ps
+	if ! api_body="$(
+		curl -sS --fail -K - <<EOF
+url = "https://nugerrit.ntnxdpro.com/a/changes/$change_num?o=CURRENT_REVISION"
+user = "$gerrit_user:$GERRIT_TOKEN"
+header = "Accept: application/json"
+EOF
+		2>&1
+	)"; then
+		echo "❌ Error: Gerrit REST API request failed for change $change_num."
+		echo "$api_body"
+		return 1
+	fi
 
-	# Try fetching patch set 1 first (most common)
-	if ! fetch_output="$(git fetch origin "$ref_ps1:$dst_ref" 2>&1)"; then
-		# Try patch set 2
-		if ! fetch_output="$(git fetch origin "$ref_ps2:$dst_ref" 2>&1)"; then
-			echo "⚠️  Could not fetch via origin, trying direct Gerrit host..."
-			# Parse credentials from remote URL and construct gerrit URL
-			local gerrit_url
-			if [[ "$remote_url" == https://*@* ]]; then
-				# Extract user@ from the URL
-				local auth="${remote_url#*//}"
-				auth="${auth%%@*}"
-				gerrit_url="https://${auth}@nugerrit.ntnxdpro.com/a/$repo"
-			elif [[ "$remote_url" == https://* ]]; then
-				gerrit_url="https://nugerrit.ntnxdpro.com/a/$repo"
-			else
-				gerrit_url="https://sriram.ravichandran@nugerrit.ntnxdpro.com/a/$repo"
-			fi
+	# Strip Gerrit's ")]}'" XSSI prefix line, then read current revision and its patch set number
+	api_json="$(printf '%s\n' "$api_body" | sed "1s/^)]}'//")"
+	latest_sha="$(printf '%s' "$api_json" | jq -r '.current_revision // empty' 2>/dev/null)"
+	latest_ps="$(printf '%s' "$api_json" | jq -r '.revisions[.current_revision]._number // empty' 2>/dev/null)"
+	if [[ -z "$latest_sha" || -z "$latest_ps" ]]; then
+		echo "❌ Error: Could not determine the latest patch set for change $change_num from the Gerrit REST API."
+		return 1
+	fi
 
-			# Try fetching from Gerrit host directly
-			if ! fetch_output="$(git fetch "$gerrit_url" "$ref_ps1:$dst_ref" 2>&1)"; then
-				if ! fetch_output="$(git fetch "$gerrit_url" "$ref_ps2:$dst_ref" 2>&1)"; then
-					echo "❌ Error: Failed to fetch ref '$ref_ps1' from origin or Gerrit host."
-					echo "$fetch_output"
-					return 1
-				fi
-			fi
-		fi
+	# Fetch the latest patch set over HTTPS, authenticating with GERRIT_TOKEN via an
+	# env-supplied git config so the token isn't put in argv or the remote URL
+	local ref_latest="$ref_base/$latest_ps"
+	local gerrit_url="https://nugerrit.ntnxdpro.com/a/$repo"
+	local basic_auth
+	basic_auth="$(printf '%s:%s' "$gerrit_user" "$GERRIT_TOKEN" | base64 | tr -d '\n')"
+	echo "   Latest patch set: $latest_ps ($latest_sha)"
+	if ! fetch_output="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+		GIT_CONFIG_VALUE_0="Authorization: Basic $basic_auth" \
+		git -C "$repo_path" fetch "$gerrit_url" "$ref_latest:$dst_ref" 2>&1)"; then
+		echo "❌ Error: Failed to fetch '$ref_latest' from Gerrit."
+		echo "$fetch_output"
+		return 1
+	fi
+
+	local fetched_sha
+	fetched_sha="$(git -C "$repo_path" rev-parse "$dst_ref" 2>/dev/null)"
+	if [[ "$fetched_sha" != "$latest_sha" ]]; then
+		echo "❌ Error: Fetched commit $fetched_sha does not match Gerrit's latest revision $latest_sha."
+		return 1
 	fi
 
 	echo "🌳 Creating worktree '$target_path' with branch '$branch_name'..."
 	local add_output
-	if ! add_output="$(git worktree add -b "$branch_name" "$target_path" "$dst_ref" 2>&1)"; then
+	if ! add_output="$(git -C "$repo_path" worktree add -b "$branch_name" "$target_path" "$dst_ref" 2>&1)"; then
 		echo "❌ Error: Failed to create worktree."
 		echo "$add_output"
 		return 1
 	fi
 
 	echo "✅ Worktree created successfully."
-	echo "📦 Repo: $(git remote get-url origin 2>/dev/null)"
+	echo "📦 Repo: $(git -C "$repo_path" remote get-url origin 2>/dev/null)"
 	echo "🌿 Branch: $branch_name"
 	echo "🌳 Worktree: $target_path"
 	echo "🔖 Change: $change_num"
 	echo "📍 HEAD:"
-	if ! git --no-pager log -1 --decorate --oneline 2>/dev/null; then
+	if ! git -C "$repo_path" --no-pager log -1 --decorate --oneline 2>/dev/null; then
 		echo "❌ Warning: Failed to print HEAD commit."
+	fi
+
+	if ! cd "$target_path"; then
+		echo "❌ Error: Worktree created but failed to switch to '$target_path'."
+		return 1
 	fi
 }
 
@@ -356,7 +413,14 @@ gwa() {
 	fi
 
 	local add_output
-	if ((is_gerrit)); then
+	if git show-ref --verify --quiet "refs/heads/$local_branch_name"; then
+		echo "🌳 Reusing existing local branch '$local_branch_name' for worktree..."
+		if ! add_output="$(git worktree add "$target_path" "$local_branch_name" 2>&1)"; then
+			echo "❌ Error: Failed to create worktree."
+			echo "$add_output"
+			return 1
+		fi
+	elif ((is_gerrit)); then
 		echo "🌳 Creating branch '$local_branch_name' and worktree from '$selected_remote_branch' (Gerrit - no tracking)..."
 		if ! add_output="$(git worktree add -b "$local_branch_name" "$target_path" "$selected_remote_branch" 2>&1)"; then
 			echo "❌ Error: Failed to create worktree."

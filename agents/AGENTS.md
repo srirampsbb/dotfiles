@@ -8,6 +8,6 @@
 
 - when you are done modifying all files for the current task, run:
   ```bash
-  $HOME/.local/bin/lint
+  lint
   ```
 - process the output and fix any linter errors until the script says something like "Done: all checks completed"
